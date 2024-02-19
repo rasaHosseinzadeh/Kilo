@@ -1,4 +1,3 @@
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <termios.h>
@@ -8,7 +7,13 @@
 
 struct termios orig_termois;
 
+void clear_screen() {
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[H", 3);
+}
+
 int die(const char *s) {
+  clear_screen();
   perror(s);
   exit(1);
 }
@@ -47,10 +52,16 @@ char read_key() {
   return c;
 }
 
+void refresh_screen() {
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[H", 3);
+}
+
 void process_key_press() {
   char c = read_key();
   switch (c) {
   case CTRL_KEY('q'):
+    clear_screen();
     exit(0);
     break;
   }
@@ -59,6 +70,7 @@ void process_key_press() {
 int main() {
   enable_raw_mode();
   while (1) {
+    refresh_screen();
     process_key_press();
   }
   return 0;
