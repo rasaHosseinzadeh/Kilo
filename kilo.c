@@ -1,8 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/ioctl.h>
-#include <termios.h>
-#include <unistd.h>
+#include "append_buf.h"
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -76,20 +72,23 @@ char read_key() {
   return c;
 }
 
-void draw_rows() {
+void draw_rows(struct abuf *ab) {
   for (int y = 0; y < E.screen_rows; ++y) {
-    write(STDOUT_FILENO, "~", 1);
+    ab_append(ab, "~", 1);
     if (y != E.screen_rows - 1) {
-      write(STDOUT_FILENO, "\r\n", 2);
+      ab_append(ab, "\r\n", 2);
     }
   }
 }
 
 void refresh_screen() {
-  write(STDOUT_FILENO, "\x1b[2J", 4);
-  write(STDOUT_FILENO, "\x1b[H", 3);
-  draw_rows();
-  write(STDOUT_FILENO, "\x1b[H", 3);
+  struct abuf ab = ABUF_INIT;
+  ab_append(&ab, "\x1b[2J", 4);
+  ab_append(&ab, "\x1b[H", 3);
+  draw_rows(&ab);
+  ab_append(&ab, "\x1b[H", 3);
+  write(STDOUT_FILENO, ab.b, ab.len);
+  ab_free(&ab);
 }
 
 void process_key_press() {
