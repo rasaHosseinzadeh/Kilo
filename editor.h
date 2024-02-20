@@ -13,6 +13,7 @@
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 struct editor_config {
+  int cx, cy;
   int screen_rows;
   int screen_cols;
   struct termios orig_termois;
@@ -20,10 +21,21 @@ struct editor_config {
 
 extern struct editor_config E;
 
+enum editorKey {
+  ARROW_LEFT = 1000,
+  ARROW_RIGHT,
+  ARROW_UP,
+  ARROW_DOWN,
+  PAGE_UP,
+  PAGE_DOWN,
+  DEL_KEY,
+};
+
 void init();
-char read_key();
+int read_key();
 void draw_rows(struct abuf *ab);
 void refresh_screen();
 void process_key_press();
+void move_cursor(int key);
 
 #endif
