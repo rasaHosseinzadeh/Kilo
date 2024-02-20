@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -pedantic -std=c99
-OBJ = kilo.o append_buf.o
-DEPS = append_buf.h
+OBJ = kilo.o append_buf.o terminal.o editor.o
+DEPS = append_buf.h terminal.h editor.h
 EXEC = kilo
 
 %.o: %.c $(DEPS)
