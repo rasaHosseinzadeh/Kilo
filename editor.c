@@ -4,6 +4,8 @@ struct editor_config E;
 
 void init() {
   E.row = NULL;
+  E.rowoff = 0;
+  E.coloff = 0;
   E.numrows = 0;
   E.cx = 0;
   E.cy = 0;
@@ -11,6 +13,7 @@ void init() {
   if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
     die("get_windows_size");
   }
+  E.screen_rows--;
 }
 
 void append_row(char *s, size_t len) {
@@ -88,46 +91,84 @@ int read_key() {
   return c;
 }
 void move_cursor(int key) {
+  erow *row = (E.cy > E.numrows) ? NULL : &E.row[E.cy];
   switch (key) {
   case ARROW_LEFT:
     E.cx--;
     E.cx = E.cx < 0 ? 0 : E.cx;
     break;
   case ARROW_RIGHT:
-    E.cx++;
-    E.cx = E.cx >= E.screen_cols ? E.screen_cols - 1 : E.cx;
+    if (row && E.cx < row->size) {
+      E.cx++;
+    }
     break;
   case ARROW_UP:
     E.cy--;
-    E.cy = E.cx < 0 ? 0 : E.cx;
+    E.cy = E.cy < 0 ? 0 : E.cy;
     break;
   case ARROW_DOWN:
     E.cy++;
-    E.cy = E.cy >= E.screen_rows ? E.screen_rows - 1 : E.cy;
+    E.cy = E.cy > E.numrows ? E.numrows : E.cy;
     break;
   }
+  int rowlen = E.cy > E.numrows ? 0 : E.row[E.cy].size;
+  if (E.cx > rowlen) {
+    E.cx = rowlen;
+  }
 }
+
+void draw_status_bar(struct abuf *ab) {
+  ab_append(ab, "\x1b[7m", 4);
+  int len = 0;
+  while (len < E.screen_cols) {
+    ab_append(ab, " ", 1);
+    len++;
+  }
+  ab_append(ab, "\x1b[m", 4);
+}
+
 void draw_rows(struct abuf *ab) {
-  for (int y = 0; y < E.screen_rows; ++y) {
+  for (int y = E.rowoff; y < E.rowoff + E.screen_rows; ++y) {
     if (y >= E.numrows) {
       ab_append(ab, "~", 1);
     } else {
-      int len = E.row[y].size > E.screen_cols ? E.screen_cols : E.row[y].size;
-      ab_append(ab, E.row[y].chars, len);
+      int len = E.row[y].size - E.coloff;
+      if (len < 0) {
+        len = 0;
+      }
+      if (len > E.screen_cols) {
+        len = E.screen_cols;
+      }
+      ab_append(ab, &E.row[y].chars[E.coloff], len);
     }
     ab_append(ab, "\x1b[K", 3);
-    if (y != E.screen_rows - 1) {
-      ab_append(ab, "\r\n", 2);
-    }
+    ab_append(ab, "\r\n", 2);
+  }
+}
+
+void scroll() {
+  if (E.cy < E.rowoff) {
+    E.rowoff = E.cy;
+  } else if (E.cy >= E.rowoff + E.screen_rows) {
+    E.rowoff = E.cy - E.screen_rows + 1;
+  }
+
+  if (E.cx < E.coloff) {
+    E.coloff = E.cx;
+  } else if (E.cx > E.coloff + E.screen_cols) {
+    E.coloff = E.cx - E.screen_cols + 1;
   }
 }
 
 void refresh_screen() {
+  scroll();
   struct abuf ab = ABUF_INIT;
   ab_append(&ab, "\x1b[H", 3);
   draw_rows(&ab);
+  draw_status_bar(&ab);
   char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1,
+           (E.cx - E.coloff) + 1);
   ab_append(&ab, buf, strlen(buf));
   write(STDOUT_FILENO, ab.b, ab.len);
   ab_free(&ab);
