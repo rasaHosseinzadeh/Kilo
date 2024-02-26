@@ -3,12 +3,44 @@
 struct editor_config E;
 
 void init() {
+  E.row = NULL;
+  E.numrows = 0;
   E.cx = 0;
   E.cy = 0;
   enable_raw_mode();
   if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
     die("get_windows_size");
   }
+}
+
+void append_row(char *s, size_t len) {
+  int at = E.numrows;
+  E.numrows++;
+  E.row = realloc(E.row, sizeof(erow) * E.numrows);
+  E.row[at].size = len;
+  E.row[at].chars = malloc(len + 1);
+  memcpy(E.row[at].chars, s, len);
+  E.row[at].chars[len] = '\0';
+}
+
+void open(char *filename) {
+  FILE *fp = fopen(filename, "r");
+  if (!fp) {
+    die("fopen");
+  }
+  char *line = NULL;
+  size_t linecap = 0;
+  ssize_t linelen;
+  linelen = getline(&line, &linecap, fp);
+  while ((linelen = getline(&line, &linecap, fp)) != -1) {
+    while (linelen > 0 &&
+           (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
+      linelen--;
+    }
+    append_row(line, linelen);
+  }
+  free(line);
+  fclose(fp);
 }
 
 int read_key() {
@@ -77,7 +109,12 @@ void move_cursor(int key) {
 }
 void draw_rows(struct abuf *ab) {
   for (int y = 0; y < E.screen_rows; ++y) {
-    ab_append(ab, "~", 1);
+    if (y >= E.numrows) {
+      ab_append(ab, "~", 1);
+    } else {
+      int len = E.row[y].size > E.screen_cols ? E.screen_cols : E.row[y].size;
+      ab_append(ab, E.row[y].chars, len);
+    }
     ab_append(ab, "\x1b[K", 3);
     if (y != E.screen_rows - 1) {
       ab_append(ab, "\r\n", 2);
