@@ -6,12 +6,14 @@
 
 #include "append_buf.h"
 #include "terminal.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CTRL_KEY(k) ((k) & 0x1f)
@@ -24,11 +26,13 @@ typedef struct erow {
 struct editor_config {
   int cx, cy;
   int rowoff, coloff;
-  int screen_rows;
-  int screen_cols;
-  struct termios orig_termois;
+  int screen_rows, screen_cols;
   int numrows;
   erow *row;
+  char *filename;
+  char statusmsg[80];
+  time_t statusmsg_time;
+  struct termios orig_termois;
 };
 
 extern struct editor_config E;
@@ -51,5 +55,6 @@ void process_key_press();
 void move_cursor(int key);
 void open(char *filename);
 void append_row(char *s, size_t len);
+void set_status_message(const char *fmt, ...);
 
 #endif

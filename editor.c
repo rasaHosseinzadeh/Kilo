@@ -1,4 +1,5 @@
 #include "editor.h"
+#include <stdio.h>
 
 struct editor_config E;
 
@@ -13,7 +14,10 @@ void init() {
   if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
     die("get_windows_size");
   }
-  E.screen_rows--;
+  E.screen_rows -= 2;
+  E.filename = NULL;
+  E.statusmsg[0] = '\0';
+  E.statusmsg_time = 0;
 }
 
 void append_row(char *s, size_t len) {
@@ -27,6 +31,8 @@ void append_row(char *s, size_t len) {
 }
 
 void open(char *filename) {
+  free(E.filename);
+  E.filename = strdup(filename);
   FILE *fp = fopen(filename, "r");
   if (!fp) {
     die("fopen");
@@ -119,12 +125,35 @@ void move_cursor(int key) {
 
 void draw_status_bar(struct abuf *ab) {
   ab_append(ab, "\x1b[7m", 4);
-  int len = 0;
+  char status[80], rstatus[80];
+  int len = snprintf(status, sizeof(status), "%.20s - %d lines",
+                     E.filename ? E.filename : "[No Name]", E.numrows);
+  int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.numrows);
+  if (len > E.screen_cols)
+    len = E.screen_cols;
+  ab_append(ab, status, len);
   while (len < E.screen_cols) {
-    ab_append(ab, " ", 1);
-    len++;
+    if (E.screen_cols - len == rlen) {
+      ab_append(ab, rstatus, rlen);
+      break;
+    } else {
+      ab_append(ab, " ", 1);
+      len++;
+    }
   }
   ab_append(ab, "\x1b[m", 4);
+  ab_append(ab, "\n\r", 2);
+}
+
+void draw_message_bar(struct abuf *ab) {
+  ab_append(ab, "\x1b[K", 3);
+  int msglen = strlen(E.statusmsg);
+  if (msglen > E.screen_cols) {
+    msglen = E.screen_cols;
+  }
+  if (msglen && time(NULL) - E.statusmsg_time < 5) {
+    ab_append(ab, E.statusmsg, msglen);
+  }
 }
 
 void draw_rows(struct abuf *ab) {
@@ -166,12 +195,21 @@ void refresh_screen() {
   ab_append(&ab, "\x1b[H", 3);
   draw_rows(&ab);
   draw_status_bar(&ab);
+  draw_message_bar(&ab);
   char buf[32];
   snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1,
            (E.cx - E.coloff) + 1);
   ab_append(&ab, buf, strlen(buf));
   write(STDOUT_FILENO, ab.b, ab.len);
   ab_free(&ab);
+}
+
+void set_status_message(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+  va_end(ap);
+  E.statusmsg_time = time(NULL);
 }
 
 void process_key_press() {
