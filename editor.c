@@ -18,6 +18,7 @@ void init() {
   E.filename = NULL;
   E.statusmsg[0] = '\0';
   E.statusmsg_time = 0;
+  E.dirty = 0;
 }
 
 void append_row(char *s, size_t len) {
@@ -30,7 +31,7 @@ void append_row(char *s, size_t len) {
   E.row[at].chars[len] = '\0';
 }
 
-void open(char *filename) {
+void open_file(char *filename) {
   free(E.filename);
   E.filename = strdup(filename);
   FILE *fp = fopen(filename, "r");
@@ -40,7 +41,6 @@ void open(char *filename) {
   char *line = NULL;
   size_t linecap = 0;
   ssize_t linelen;
-  linelen = getline(&line, &linecap, fp);
   while ((linelen = getline(&line, &linecap, fp)) != -1) {
     while (linelen > 0 &&
            (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
@@ -50,6 +50,74 @@ void open(char *filename) {
   }
   free(line);
   fclose(fp);
+}
+
+void row_insert_char(erow *row, int at, int c) {
+  if (at < 0 || at > row->size) {
+    at = row->size;
+  }
+  row->chars = realloc(row->chars, row->size + 2);
+  memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+  row->size++;
+  row->chars[at] = c;
+  E.dirty = 1;
+}
+
+void insert_char(int c) {
+  if (E.cy == E.numrows) {
+    append_row("", 0);
+  }
+  row_insert_char(&E.row[E.cy], E.cx++, c);
+}
+
+char *rows2string(int *buflen) {
+  int totlen = 0;
+  int j;
+  for (j = 0; j < E.numrows; ++j) {
+    totlen += E.row[j].size + 1;
+  }
+  *buflen = totlen;
+  char *buf = malloc(totlen);
+  char *p = buf;
+  for (j = 0; j < E.numrows; ++j) {
+    memcpy(p, E.row[j].chars, E.row[j].size);
+    p += E.row[j].size;
+    *p = '\n';
+    p++;
+  }
+  return buf;
+}
+
+void save_file() {
+  if (E.filename == NULL) {
+    set_status_message("No file to save to.");
+    return;
+  }
+  int len;
+  int err = 0;
+  char *buf = rows2string(&len);
+  int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+  if (fd == -1) {
+    err = 1;
+    goto cleanup;
+  }
+  if (ftruncate(fd, len) == -1) {
+    err = 1;
+    goto cleanup;
+  }
+  if (write(fd, buf, len) != len) {
+    err = 1;
+    goto cleanup;
+  }
+cleanup:
+  if (err) {
+    set_status_message("Can't save! I/O error: %s", strerror(errno));
+  } else {
+    E.dirty = 0;
+    set_status_message("Wrote %d bytes to disk.", len);
+  }
+  close(fd);
+  free(buf);
 }
 
 int read_key() {
@@ -126,8 +194,9 @@ void move_cursor(int key) {
 void draw_status_bar(struct abuf *ab) {
   ab_append(ab, "\x1b[7m", 4);
   char status[80], rstatus[80];
-  int len = snprintf(status, sizeof(status), "%.20s - %d lines",
-                     E.filename ? E.filename : "[No Name]", E.numrows);
+  int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
+                     E.filename ? E.filename : "[No Name]", E.numrows,
+                     E.dirty ? "(modified)" : "");
   int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.numrows);
   if (len > E.screen_cols)
     len = E.screen_cols;
@@ -213,11 +282,30 @@ void set_status_message(const char *fmt, ...) {
 }
 
 void process_key_press() {
+  static int quit_times = 1;
   int c = read_key();
   switch (c) {
+  case ESCAPE:
+  case CTRL_KEY('l'):
+    break;
   case CTRL_KEY('q'):
+    if (E.dirty && quit_times > 0) {
+      set_status_message("Unsaved changes! Press Ctrl+q again to quit.");
+      quit_times--;
+      return;
+    }
     clear_screen();
     exit(0);
+    break;
+  case CTRL_KEY('s'):
+    save_file();
+    break;
+  case '\r':
+  case '\n':
+    break;
+  case BACKSPACE:
+  case DEL_KEY:
+  case CTRL_KEY('h'):
     break;
   case ARROW_DOWN:
   case ARROW_UP:
@@ -231,5 +319,8 @@ void process_key_press() {
     while (times--)
       move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
   } break;
+  default:
+    insert_char(c);
   }
+  quit_times = 1;
 }

@@ -6,6 +6,8 @@
 
 #include "append_buf.h"
 #include "terminal.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +30,7 @@ struct editor_config {
   int rowoff, coloff;
   int screen_rows, screen_cols;
   int numrows;
+  int dirty;
   erow *row;
   char *filename;
   char statusmsg[80];
@@ -38,6 +41,8 @@ struct editor_config {
 extern struct editor_config E;
 
 enum editorKey {
+  ESCAPE = 27,
+  BACKSPACE = 127,
   ARROW_LEFT = 1000,
   ARROW_RIGHT,
   ARROW_UP,
@@ -53,7 +58,7 @@ void draw_rows(struct abuf *ab);
 void refresh_screen();
 void process_key_press();
 void move_cursor(int key);
-void open(char *filename);
+void open_file(char *filename);
 void append_row(char *s, size_t len);
 void set_status_message(const char *fmt, ...);
 
