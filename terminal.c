@@ -8,6 +8,10 @@ void clear_screen() {
 int die(const char *s) {
   clear_screen();
   perror(s);
+  for (int i = 0; i < E.numrows; ++i) {
+    free(E.row[i].chars);
+  }
+  free(E.row);
   exit(1);
 }
 

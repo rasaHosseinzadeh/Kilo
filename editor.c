@@ -1,5 +1,6 @@
 #include "editor.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 struct editor_config E;
 
@@ -21,20 +22,29 @@ void init() {
   E.dirty = 0;
 }
 
-void append_row(char *s, size_t len) {
-  int at = E.numrows;
-  E.numrows++;
-  E.row = realloc(E.row, sizeof(erow) * E.numrows);
+void insert_row(int at, char *s, size_t len) {
+  if (at < 0 || at > E.numrows) {
+    return;
+  }
+  E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+  memmove(&E.row[at + 1], &E.row[at], (E.numrows - at) * sizeof(erow));
   E.row[at].size = len;
   E.row[at].chars = malloc(len + 1);
   memcpy(E.row[at].chars, s, len);
   E.row[at].chars[len] = '\0';
+  E.numrows++;
+  E.dirty = 1;
 }
 
 void open_file(char *filename) {
   free(E.filename);
   E.filename = strdup(filename);
-  FILE *fp = fopen(filename, "r");
+  FILE *fp = fopen(filename, "a"); // Ensure the file exists
+  if (!fp) {
+    die("fopen");
+  }
+  fclose(fp);
+  fp = fopen(filename, "r");
   if (!fp) {
     die("fopen");
   }
@@ -46,10 +56,25 @@ void open_file(char *filename) {
            (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
       linelen--;
     }
-    append_row(line, linelen);
+    insert_row(E.numrows, line, linelen);
   }
   free(line);
   fclose(fp);
+}
+
+void insert_enter() {
+  if (E.cx == 0) {
+    insert_row(E.cy, "", 0);
+  } else {
+    erow *row = &E.row[E.cy];
+    insert_row(E.cy + 1, &row->chars[E.cx], row->size - E.cx);
+    row = &E.row[E.cy]; // previous refrence is invalid as insert_row callls
+                        // realloc
+    row->size = E.cx;
+    row->chars[E.cx] = '\0';
+  }
+  E.cx = 0;
+  E.cy++;
 }
 
 void row_insert_char(erow *row, int at, int c) {
@@ -63,11 +88,54 @@ void row_insert_char(erow *row, int at, int c) {
   E.dirty = 1;
 }
 
+void append_string_to_row(erow *row, char *s, size_t len) {
+  row->chars = realloc(row->chars, row->size + len + 1);
+  memcpy(&row->chars[row->size], s, len);
+  row->size += len;
+  row->chars[row->size] = '\0';
+  E.dirty = 1;
+}
+
+void del_row(int at) {
+  if (at <= 0 || at >= E.numrows) {
+    return;
+  }
+  free(E.row[at].chars);
+  memmove(&E.row[at], &E.row[at + 1], (E.numrows - at - 1) * sizeof(erow));
+  E.numrows -= 1;
+  E.dirty = 1;
+}
+
+void row_del_char(erow *row, int at) {
+  if (at < 0 || at >= row->size) {
+    return;
+  }
+  memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
+  row->size -= 1;
+  E.dirty = 1;
+}
+
 void insert_char(int c) {
   if (E.cy == E.numrows) {
-    append_row("", 0);
+    insert_row(E.numrows, "", 0);
   }
   row_insert_char(&E.row[E.cy], E.cx++, c);
+}
+
+void del_char() {
+  if (E.cy == E.numrows) {
+    return;
+  }
+  erow *row = &E.row[E.cy];
+  if (E.cx > 0) {
+    row_del_char(row, E.cx - 1);
+    E.cx -= 1;
+  } else if (E.cx == 0 && E.cy > 0) {
+    E.cx = E.row[E.cy - 1].size;
+    append_string_to_row(&E.row[E.cy - 1], row->chars, row->size);
+    del_row(E.cy);
+    E.cy -= 1;
+  }
 }
 
 char *rows2string(int *buflen) {
@@ -185,7 +253,7 @@ void move_cursor(int key) {
     E.cy = E.cy > E.numrows ? E.numrows : E.cy;
     break;
   }
-  int rowlen = E.cy > E.numrows ? 0 : E.row[E.cy].size;
+  int rowlen = E.cy >= E.numrows ? 0 : E.row[E.cy].size;
   if (E.cx > rowlen) {
     E.cx = rowlen;
   }
@@ -302,10 +370,15 @@ void process_key_press() {
     break;
   case '\r':
   case '\n':
+    insert_enter();
     break;
   case BACKSPACE:
   case DEL_KEY:
   case CTRL_KEY('h'):
+    if (c == DEL_KEY) {
+      move_cursor(ARROW_RIGHT);
+    }
+    del_char();
     break;
   case ARROW_DOWN:
   case ARROW_UP:

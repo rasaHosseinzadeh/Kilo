@@ -59,7 +59,7 @@ void refresh_screen();
 void process_key_press();
 void move_cursor(int key);
 void open_file(char *filename);
-void append_row(char *s, size_t len);
+void insert_row(int at, char *s, size_t len);
 void set_status_message(const char *fmt, ...);
 
 #endif
