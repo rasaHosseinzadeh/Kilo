@@ -1,6 +1,4 @@
 #include "editor.h"
-#include <stdio.h>
-#include <stdlib.h>
 
 struct editor_config E;
 
@@ -156,10 +154,34 @@ char *rows2string(int *buflen) {
   return buf;
 }
 
+char *show_prompt(char *prompt) {
+  size_t bufsize = 128, buflen = 0;
+  char *buf = malloc(bufsize);
+  buf[0] = '\0';
+
+  while (1) {
+    set_status_message(prompt, buf);
+    refresh_screen();
+    int c = read_key();
+    if (c == '\r' || c == '\n') {
+      if (buflen != 0) {
+        set_status_message("");
+        return buf;
+      }
+    } else if (!iscntrl(c) && c < 128) {
+      if (buflen == bufsize - 1) {
+        bufsize <<= 1;
+        buf = realloc(buf, bufsize);
+      }
+      buf[buflen++] = c;
+      buf[buflen] = '\0';
+    }
+  }
+}
+
 void save_file() {
   if (E.filename == NULL) {
-    set_status_message("No file to save to.");
-    return;
+    E.filename = show_prompt("Save as: %s");
   }
   int len;
   int err = 0;
