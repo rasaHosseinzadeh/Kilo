@@ -154,7 +154,7 @@ char *rows2string(int *buflen) {
   return buf;
 }
 
-char *show_prompt(char *prompt) {
+char *show_prompt(char *prompt, void (*callback)(char *, int)) {
   size_t bufsize = 128, buflen = 0;
   char *buf = malloc(bufsize);
   buf[0] = '\0';
@@ -163,9 +163,23 @@ char *show_prompt(char *prompt) {
     set_status_message(prompt, buf);
     refresh_screen();
     int c = read_key();
-    if (c == '\r' || c == '\n') {
+    if (c == DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
+      if (buflen > 0) {
+        buf[--buflen] = '\0';
+      }
+    } else if (c == '\x1b') {
+      set_status_message("");
+      if (callback) {
+        callback(buf, c);
+      }
+      free(buf);
+      return NULL;
+    } else if (c == '\r' || c == '\n') {
       if (buflen != 0) {
         set_status_message("");
+        if (callback) {
+          callback(buf, c);
+        }
         return buf;
       }
     } else if (!iscntrl(c) && c < 128) {
@@ -176,12 +190,15 @@ char *show_prompt(char *prompt) {
       buf[buflen++] = c;
       buf[buflen] = '\0';
     }
+    if (callback) {
+      callback(buf, c);
+    }
   }
 }
 
 void save_file() {
   if (E.filename == NULL) {
-    E.filename = show_prompt("Save as: %s");
+    E.filename = show_prompt("Save as: %s", NULL);
   }
   int len;
   int err = 0;
@@ -208,6 +225,30 @@ cleanup:
   }
   close(fd);
   free(buf);
+}
+
+void find_callback(char *query, int c) {
+  if (c == '\r' || c == '\x1b') {
+    return;
+  }
+  int i;
+  for (i = 0; i < E.numrows; ++i) {
+    erow *row = &E.row[i];
+    char *match = strstr(row->chars, query);
+    if (match) {
+      E.cy = i;
+      E.cx = match - row->chars;
+      E.rowoff = E.numrows;
+      break;
+    }
+  }
+}
+
+void find() {
+  char *query = show_prompt("Search: %s (ESC to cancel)", find_callback);
+  if (query == NULL) {
+    return;
+  }
 }
 
 int read_key() {
@@ -401,6 +442,9 @@ void process_key_press() {
       move_cursor(ARROW_RIGHT);
     }
     del_char();
+    break;
+  case CTRL_KEY('f'):
+    find();
     break;
   case ARROW_DOWN:
   case ARROW_UP:
