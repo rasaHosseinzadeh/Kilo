@@ -228,15 +228,33 @@ cleanup:
 }
 
 void find_callback(char *query, int c) {
+  static int last_match = -1;
+  static int direction = 1;
   if (c == '\r' || c == '\x1b') {
+    last_match = -1;
+    direction = 1;
     return;
+  } else if (c == ARROW_DOWN || c == ARROW_RIGHT) {
+    direction = 1;
+  } else if (c == ARROW_UP || c == ARROW_LEFT) {
+    direction = -1;
+  } else {
+    direction = 1;
+    last_match = -1;
   }
-  int i;
+  int i, current = last_match;
   for (i = 0; i < E.numrows; ++i) {
-    erow *row = &E.row[i];
+    current += direction;
+    if (current == -1) {
+      current = E.numrows - 1;
+    } else if (current == E.numrows) {
+      current = 0;
+    }
+    erow *row = &E.row[current];
     char *match = strstr(row->chars, query);
     if (match) {
-      E.cy = i;
+      last_match = current;
+      E.cy = current;
       E.cx = match - row->chars;
       E.rowoff = E.numrows;
       break;
@@ -245,9 +263,16 @@ void find_callback(char *query, int c) {
 }
 
 void find() {
+  int bkupx = E.cx, bkupy = E.cy;
+  int bkupcoloff = E.coloff, bkuprowoff = E.rowoff;
   char *query = show_prompt("Search: %s (ESC to cancel)", find_callback);
-  if (query == NULL) {
-    return;
+  if (query) {
+    free(query);
+  } else {
+    E.cx = bkupx;
+    E.cy = bkupy;
+    E.coloff = bkupcoloff;
+    E.rowoff = bkuprowoff;
   }
 }
 
@@ -368,7 +393,16 @@ void draw_rows(struct abuf *ab) {
       if (len > E.screen_cols) {
         len = E.screen_cols;
       }
-      ab_append(ab, &E.row[y].chars[E.coloff], len);
+      char *c = &E.row[y].chars[E.coloff];
+      for (int j = 0; j < len; ++j) {
+        if (isdigit(c[j])) {
+          ab_append(ab, "\x1b[31m", 5);
+          ab_append(ab, &c[j], 1);
+          ab_append(ab, "\x1b[39m", 5);
+        } else {
+          ab_append(ab, &c[j], 1);
+        }
+      }
     }
     ab_append(ab, "\x1b[K", 3);
     ab_append(ab, "\r\n", 2);
