@@ -54,29 +54,35 @@ int is_separator(int c) {
 }
 
 void editorSelectSyntaxHighlight(struct editorBuffer *buf) {
+  fprintf(stderr, "DEBUG: editorSelectSyntaxHighlight: Processing filename: %s\n", buf->filename ? buf->filename : "NULL");
   buf->syntax = NULL;
-  if (buf->filename == NULL)
+  if (buf->filename == NULL) {
+    fprintf(stderr, "DEBUG: editorSelectSyntaxHighlight: Filename is NULL, syntax not set.\n");
     return;
+  }
 
   char *ext = strrchr(buf->filename, '.');
-  if (!ext)
+  if (!ext) {
+    fprintf(stderr, "DEBUG: editorSelectSyntaxHighlight: No extension found for %s, syntax not set.\n", buf->filename);
     return;
+  }
+  fprintf(stderr, "DEBUG: editorSelectSyntaxHighlight: Found extension '%s' for %s\n", ext, buf->filename);
 
   for (unsigned int j = 0; j < HLDB_ENTRIES; j++) {
     struct editorSyntax *s = &HLDB[j];
     unsigned int i = 0;
     while (s->filematch[i]) {
+      fprintf(stderr, "DEBUG: editorSelectSyntaxHighlight: Comparing ext '%s' with HLDB filematch '%s' for filetype '%s'\n", ext, s->filematch[i], s->filetype);
       if (!strcmp(ext, s->filematch[i])) {
         buf->syntax = s;
-        // When syntax changes, all rows need re-highlighting
-        for (int filerow = 0; filerow < buf->numrows; filerow++) {
-            // editorUpdateRowSyntax(&buf->row[filerow]); // Will be called by draw_rows
-        }
+        fprintf(stderr, "DEBUG: editorSelectSyntaxHighlight: Matched! Set syntax to '%s' for %s\n", s->filetype, buf->filename);
+        // When syntax changes, all rows need re-highlighting (done by draw_rows)
         return;
       }
       i++;
     }
   }
+  fprintf(stderr, "DEBUG: editorSelectSyntaxHighlight: No syntax profile matched for %s. buf->syntax remains NULL.\n", buf->filename);
 }
 
 // --- End Syntax Highlighting ---
@@ -484,6 +490,7 @@ void open_file(char *filename) {
   free(line);
   fclose(fp);
   current_buf->dirty = 0; // File just loaded or created
+  fprintf(stderr, "DEBUG: open_file: Calling editorSelectSyntaxHighlight for filename: %s\n", current_buf->filename);
   editorSelectSyntaxHighlight(current_buf);
 }
 
@@ -652,15 +659,32 @@ void save_file() {
   struct editorBuffer *buf = get_active_buffer();
   if (!buf) return;
 
+  char *fname_from_prompt = NULL; // Declare here to manage its lifecycle
+
   if (buf->filename == NULL) {
-    char *fname = show_prompt("Save as: %s", NULL);
-    if (fname == NULL) { // User cancelled
+    fname_from_prompt = show_prompt("Save as: %s", NULL);
+    if (fname_from_prompt == NULL) { // User cancelled
         set_status_message("Save aborted.");
         return;
     }
-    buf->filename = fname; // show_prompt returns malloced string
-    editorSelectSyntaxHighlight(buf); // Select syntax based on new filename
+    // User provided a new filename
+    free(buf->filename); // Free old filename if any (should be NULL here)
+    buf->filename = fname_from_prompt; // Ownership of malloc'd string transferred
+    fname_from_prompt = NULL; // Avoid double free later
+
+    fprintf(stderr, "DEBUG: save_file (Save As): Calling editorSelectSyntaxHighlight for new filename: %s\n", buf->filename);
+    editorSelectSyntaxHighlight(buf);
   }
+  // If fname_from_prompt was allocated (because buf->filename was initially NULL) but not used to set buf->filename 
+  // (e.g. if logic changes or error before assignment), it should be freed.
+  // However, with current logic, if fname_from_prompt is not NULL here, it means it was assigned to buf->filename.
+  // If it is NULL, it was either not allocated or already assigned and nulled.
+  // So, explicit free here is not needed IF logic above is strict.
+  // Let's be safe: if fname_from_prompt is still non-NULL here, it means it wasn't consumed.
+  if (fname_from_prompt) {
+      free(fname_from_prompt); // Should not happen with current logic path
+  }
+
 
   int len;
   int err = 0;
@@ -951,12 +975,33 @@ void draw_rows(struct abuf *ab) {
           }
           ab_append(ab, &c[j], 1);
         } else {
-          int color = hl[j]; // Using defined color numbers directly
-          if (color != current_color) {
-            current_color = color;
-            char buf_color[16];
-            snprintf(buf_color, sizeof(buf_color), "\x1b[%dm", color);
-            ab_append(ab, buf_color, strlen(buf_color));
+          int hl_type = hl[j]; 
+          char color_escape[16];
+          int apply_color_change = 0;
+
+          if (hl_type == HL_KEYWORD1) {
+            if (current_color != 91) { // Bright Red
+              snprintf(color_escape, sizeof(color_escape), "\x1b[91m");
+              current_color = 91;
+              apply_color_change = 1;
+            }
+          } else if (hl_type == HL_KEYWORD2) {
+            if (current_color != 92) { // Bright Green
+              snprintf(color_escape, sizeof(color_escape), "\x1b[92m");
+              current_color = 92;
+              apply_color_change = 1;
+            }
+          } else if (hl_type != HL_NORMAL) { // Other syntax elements like comments, strings, numbers
+             if (current_color != hl_type) { // Use their defined value directly
+                snprintf(color_escape, sizeof(color_escape), "\x1b[%dm", hl_type);
+                current_color = hl_type;
+                apply_color_change = 1;
+             }
+          }
+          // Note: HL_NORMAL case is handled by the outer if (hl[j] == HL_NORMAL)
+
+          if (apply_color_change) {
+            ab_append(ab, color_escape, strlen(color_escape));
           }
           ab_append(ab, &c[j], 1);
         }
