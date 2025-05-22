@@ -29,8 +29,21 @@ char *C_HL_keywords[] = {
     "#include", "#define", "#if", "#ifdef", "#ifndef", "#else", "#elif", "#endif",
     NULL};
 
+char *Python_HL_extensions[] = {".py", ".pyw", NULL};
+char *Python_HL_keywords[] = {
+    // Keywords
+    "def", "class", "if", "elif", "else", "for", "while", "return", "import", "from",
+    "try", "except", "finally", "with", "as", "pass", "break", "continue", "yield",
+    "lambda", "global", "nonlocal", "assert", "del", "in", "is", "not", "and", "or",
+    // Built-in constants/types (marked with | for HL_KEYWORD2)
+    "True|", "False|", "None|", "int|", "str|", "list|", "dict|", "tuple|", "set|",
+    "self|", "cls|", "print|", "len|", "range|", "super|", "isinstance|", "type|",
+    NULL};
+
 struct editorSyntax HLDB[] = {
     {"c", C_HL_extensions, C_HL_keywords, "//", "/*", "*/",
+     HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS},
+    {"python", Python_HL_extensions, Python_HL_keywords, "#", "\"\"\"", "\"\"\"",
      HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS},
 };
 
