@@ -252,6 +252,16 @@ void highlight_search(erow *row) {
   }
 }
 
+void clear_search() {
+  if (!search_active) return;
+  regfree(&search_regex);
+  free(search_query);
+  search_query = NULL;
+  search_active = 0;
+  for (int i = 0; i < E.numrows; i++)
+    update_row(&E.row[i]);
+}
+
 void insert_row(int at, char *s, size_t len) {
   if (at < 0 || at > E.numrows) {
     return;
@@ -1128,6 +1138,8 @@ static void command_execute(char *cmd) {
     open_new_file(cmd + 2, 0);
   } else if (strcmp(cmd, "help") == 0) {
     open_new_file("help.txt", 1);
+  } else if (strcmp(cmd, "noh") == 0) {
+    clear_search();
   } else if (strncmp(cmd, "s/", 2) == 0) {
     char *pat = cmd + 2;
     char *p = strchr(pat, '/');
@@ -1154,10 +1166,7 @@ void command_mode() {
 void search_mode() {
   char *pat = show_prompt("/%s", NULL);
   if (!pat) return;
-  if (search_active) {
-    regfree(&search_regex);
-    free(search_query);
-  }
+  clear_search();
   if (regcomp(&search_regex, pat, REG_EXTENDED)) {
     free(pat);
     return;
@@ -1209,6 +1218,7 @@ void search_next(int dir) {
 
 void substitute(char *pat, char *repl) {
   regex_t reg;
+  clear_search();
   if (regcomp(&reg, pat, REG_EXTENDED)) return;
   for (int r = 0; r < E.numrows; r++) {
     erow *row = &E.row[r];
@@ -1241,11 +1251,6 @@ void substitute(char *pat, char *repl) {
     }
   }
   regfree(&reg);
-
-  if (search_active) {
-    regfree(&search_regex);
-    free(search_query);
-  }
   if (regcomp(&search_regex, repl, REG_EXTENDED) == 0) {
     search_query = strdup(repl);
     search_active = 1;

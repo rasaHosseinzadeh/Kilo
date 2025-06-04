@@ -125,5 +125,6 @@ void search_mode();
 void substitute(char *pattern, char *repl);
 void search_next(int dir);
 void highlight_search(erow *row);
+void clear_search();
 
 #endif

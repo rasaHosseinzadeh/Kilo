@@ -11,6 +11,7 @@ Normal mode commands:
   /pat  - search for pattern using regex
   n     - go to next search match
   N     - go to previous search match
+  :noh  - clear search highlighting
   Tab   - autocomplete keywords when in insert mode
 
 Buffers and tabs:
