@@ -14,6 +14,11 @@ static int ac_startx = 0;
 static int ac_inserted = 0;
 static int ac_active = 0;
 
+/* Search state */
+static regex_t search_regex;
+static char *search_query = NULL;
+static int search_active = 0;
+
 static void ac_reset() {
   if (ac_matches) {
     for (int i = 0; i < ac_count; i++)
@@ -111,8 +116,9 @@ void update_row(erow *row) {
   }
   row->render[j] = '\0';
   row->rsize = j;
-  
+
   update_syntax(row);
+  highlight_search(row);
 }
 
 void update_syntax(erow *row) {
@@ -233,6 +239,17 @@ void update_syntax(erow *row) {
   row->hl_open_comment = in_comment;
   if (changed && row->idx + 1 < E.numrows)
     update_syntax(&E.row[row->idx + 1]);
+}
+
+void highlight_search(erow *row) {
+  if (!search_active || !search_query) return;
+  const char *p = row->render;
+  regmatch_t m;
+  while (regexec(&search_regex, p, 1, &m, 0) == 0) {
+    for (int i = m.rm_so; i < m.rm_eo && i < row->rsize; i++)
+      row->hl[i] = HL_MATCH;
+    p += m.rm_eo;
+  }
 }
 
 void insert_row(int at, char *s, size_t len) {
@@ -748,6 +765,37 @@ void draw_message_bar(struct abuf *ab) {
   }
 }
 
+static void draw_autocomplete(struct abuf *ab) {
+  if (!ac_active || ac_count == 0) return;
+  int show = ac_count < 5 ? ac_count : 5;
+  int width = 0;
+  for (int i = 0; i < show; i++) {
+    int l = strlen(ac_matches[i]);
+    if (l > width) width = l;
+  }
+  int x = (E.rx - E.coloff) + 1;
+  int y = (E.cy - E.rowoff) + 3;
+  if (y + show + 2 > E.screen_rows + 2)
+    y = E.screen_rows + 2 - show - 2;
+  if (x + width + 2 > E.screen_cols)
+    x = E.screen_cols - width - 2;
+  char buf[32];
+  ab_append(ab, "\x1b[s", 3); /* save cursor */
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH+", y, x);
+  ab_append(ab, buf, strlen(buf));
+  for (int i=0;i<width+2;i++) ab_append(ab, "-", 1);
+  ab_append(ab, "+", 1);
+  for (int i = 0; i < show; i++) {
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH| %-*s |", y+1+i, x, width, ac_matches[i]);
+    ab_append(ab, buf, strlen(buf));
+  }
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH+", y+show+1, x);
+  ab_append(ab, buf, strlen(buf));
+  for (int i=0;i<width+2;i++) ab_append(ab, "-", 1);
+  ab_append(ab, "+", 1);
+  ab_append(ab, "\x1b[u", 3); /* restore cursor */
+}
+
 void draw_rows(struct abuf *ab) {
   for (int y = E.rowoff; y < E.rowoff + E.screen_rows; ++y) {
     if (y >= E.numrows) {
@@ -818,6 +866,7 @@ void refresh_screen() {
   draw_rows(&ab);
   draw_status_bar(&ab);
   draw_message_bar(&ab);
+  draw_autocomplete(&ab);
   char buf[32];
   snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2,
            (E.rx - E.coloff) + 1);
@@ -915,6 +964,12 @@ void process_key_press() {
       break;
     case '$':
       move_end_line();
+      break;
+    case 'n':
+      search_next(1);
+      break;
+    case 'N':
+      search_next(-1);
       break;
     case ':':
       command_mode();
@@ -1064,13 +1119,17 @@ static void command_execute(char *cmd) {
   } else if (strcmp(cmd, "help") == 0) {
     open_new_file("help.txt", 1);
   } else if (strncmp(cmd, "s/", 2) == 0) {
-    char *p = strchr(cmd+2, '/');
+    char *pat = cmd + 2;
+    char *p = strchr(pat, '/');
     if (p) {
       *p = '\0';
-      char *repl = strchr(p+1,'/');
-      if (repl) {
-        *repl = '\0';
-        substitute(cmd+2, repl+1);
+      char *repl = p + 1;
+      char *end = strchr(repl, '/');
+      if (end) {
+        *end = '\0';
+        char *flags = end + 1;
+        int global = flags && strcmp(flags, "g") == 0;
+        substitute(pat, repl, global);
       }
     }
   }
@@ -1087,41 +1146,105 @@ void command_mode() {
 void search_mode() {
   char *pat = show_prompt("/%s", NULL);
   if (!pat) return;
-  regex_t reg;
-  if (regcomp(&reg, pat, REG_EXTENDED)) {
+  if (search_active) {
+    regfree(&search_regex);
+    free(search_query);
+  }
+  if (regcomp(&search_regex, pat, REG_EXTENDED)) {
     free(pat);
     return;
   }
-  for (int r=0;r<E.numrows;r++) {
-    regmatch_t m;
-    if (regexec(&reg, E.row[r].chars, 1, &m, 0)==0) {
-      E.cy = r;
-      E.cx = m.rm_so;
-      E.rowoff = E.numrows;
-      break;
-    }
-  }
-  regfree(&reg);
-  free(pat);
+  search_query = pat;
+  search_active = 1;
+  for (int i = 0; i < E.numrows; i++) highlight_search(&E.row[i]);
+  search_next(1);
 }
 
-void substitute(char *pat, char *repl) {
+void search_next(int dir) {
+  if (!search_active) return;
+  int r = E.cy;
+  int c = E.cx + (dir == 1 ? 1 : -1);
+  if (dir == 1) {
+    for (; r < E.numrows; r++) {
+      char *start = E.row[r].chars;
+      if (r == E.cy && c > 0) start += c;
+      regmatch_t m;
+      if (regexec(&search_regex, start, 1, &m, 0) == 0) {
+        E.cy = r;
+        E.cx = (start - E.row[r].chars) + m.rm_so;
+        E.rowoff = E.numrows;
+        return;
+      }
+      c = 0;
+    }
+  } else {
+    for (; r >= 0; r--) {
+      char *text = E.row[r].chars;
+      char *p = text;
+      char *last = NULL;
+      regmatch_t m;
+      while (regexec(&search_regex, p, 1, &m, 0) == 0) {
+        if (r == E.cy && p - text + m.rm_so >= c) break;
+        last = p + m.rm_so;
+        p += m.rm_eo;
+      }
+      if (last) {
+        E.cy = r;
+        E.cx = last - text;
+        E.rowoff = E.numrows;
+        return;
+      }
+      c = INT_MAX;
+    }
+  }
+}
+
+void substitute(char *pat, char *repl, int global) {
   regex_t reg;
   if (regcomp(&reg, pat, REG_EXTENDED)) return;
-  for (int r=0;r<E.numrows;r++) {
+  for (int r = 0; r < E.numrows; r++) {
+    erow *row = &E.row[r];
+    char *p = row->chars;
+    char *out = NULL;
+    size_t outlen = 0;
+    int replaced = 0;
     regmatch_t m;
-    if (regexec(&reg, E.row[r].chars, 1, &m, 0)==0) {
-      erow *row = &E.row[r];
-      char *newrow = malloc(row->size - (m.rm_eo - m.rm_so) + strlen(repl) + 1);
-      memcpy(newrow, row->chars, m.rm_so);
-      strcpy(newrow + m.rm_so, repl);
-      strcpy(newrow + m.rm_so + strlen(repl), row->chars + m.rm_eo);
+    while (regexec(&reg, p, 1, &m, 0) == 0) {
+      replaced = 1;
+      out = realloc(out, outlen + m.rm_so + strlen(repl) + 1);
+      memcpy(out + outlen, p, m.rm_so);
+      outlen += m.rm_so;
+      memcpy(out + outlen, repl, strlen(repl));
+      outlen += strlen(repl);
+      p += m.rm_eo;
+      if (!global) break;
+    }
+    if (replaced) {
+      size_t remain = strlen(p);
+      out = realloc(out, outlen + remain + 1);
+      memcpy(out + outlen, p, remain);
+      outlen += remain;
+      out[outlen] = '\0';
       free(row->chars);
-      row->chars = newrow;
-      row->size = strlen(newrow);
+      row->chars = out;
+      row->size = outlen;
       update_row(row);
-      break;
+      if (!global) break;
+    } else {
+      free(out);
     }
   }
   regfree(&reg);
+
+  if (search_active) {
+    regfree(&search_regex);
+    free(search_query);
+  }
+  if (regcomp(&search_regex, repl, REG_EXTENDED) == 0) {
+    search_query = strdup(repl);
+    search_active = 1;
+    for (int i = 0; i < E.numrows; i++) highlight_search(&E.row[i]);
+  } else {
+    search_active = 0;
+  }
 }

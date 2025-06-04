@@ -8,7 +8,10 @@ Normal mode commands:
   :w    - save file
   :q    - quit
   :s/pat/repl/ - substitute first match of pat with repl (regex)
+  :s/pat/repl/g - substitute all matches across the file
   /pat  - search for pattern using regex
+  n     - go to next search match
+  N     - go to previous search match
   Tab   - autocomplete keywords when in insert mode
 
 Buffers and tabs:

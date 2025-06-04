@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <regex.h>
 #include <ncurses.h>
+#include <limits.h>
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -121,6 +122,8 @@ void open_new_file(char *filename, int readonly);
 void autocomplete();
 void command_mode();
 void search_mode();
-void substitute(char *pattern, char *repl);
+void substitute(char *pattern, char *repl, int global);
+void search_next(int dir);
+void highlight_search(erow *row);
 
 #endif
