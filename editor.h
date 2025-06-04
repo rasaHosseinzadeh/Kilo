@@ -18,6 +18,9 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <regex.h>
+#include <ncurses.h>
+#include <limits.h>
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -62,15 +65,24 @@ struct editor_config {
   int screen_rows, screen_cols;
   int numrows;
   int dirty;
+  int readonly;
   erow *row;
   char *filename;
   char statusmsg[80];
   time_t statusmsg_time;
   struct editorSyntax *syntax;
   struct termios orig_termois;
+  int mode;
 };
 
-extern struct editor_config E;
+enum editor_mode {
+  MODE_NORMAL,
+  MODE_INSERT,
+  MODE_COMMAND
+};
+
+extern struct editor_config *E_;
+#define E (*E_)
 
 enum editorKey {
   ESCAPE = 27,
@@ -87,10 +99,11 @@ enum editorKey {
 void init();
 int read_key();
 void draw_rows(struct abuf *ab);
+void draw_tabs(struct abuf *ab);
 void refresh_screen();
 void process_key_press();
 void move_cursor(int key);
-void open_file(char *filename);
+int open_file(char *filename);
 void insert_row(int at, char *s, size_t len);
 void set_status_message(const char *fmt, ...);
 void update_syntax(erow *row);
@@ -98,5 +111,20 @@ int syntax_to_color(int hl);
 void select_syntax_highlight();
 int is_separator(int c);
 void update_row(erow *row);
+void open_line_below();
+void move_word_forward();
+void move_word_backward();
+void move_word_end();
+void move_end_line();
+void switch_buffer(int idx);
+void close_current_buffer();
+void open_new_file(char *filename, int readonly);
+void autocomplete();
+void command_mode();
+void search_mode();
+void substitute(char *pattern, char *repl);
+void search_next(int dir);
+void highlight_search(erow *row);
+void clear_search();
 
 #endif

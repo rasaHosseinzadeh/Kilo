@@ -1,6 +1,55 @@
 #include "editor.h"
 
-struct editor_config E;
+struct editor_config *E_;
+static struct editor_config *buffers[10];
+static int num_buffers = 0;
+static int cur_buffer = 0;
+
+/* Autocomplete state */
+static char **ac_matches = NULL;
+static int ac_count = 0;
+static int ac_index = 0;
+static int ac_prefixlen = 0;
+static int ac_startx = 0;
+static int ac_inserted = 0;
+static int ac_active = 0;
+
+/* Search state */
+static regex_t search_regex;
+static char *search_query = NULL;
+static int search_active = 0;
+
+static void ac_reset() {
+  if (ac_matches) {
+    for (int i = 0; i < ac_count; i++)
+      free(ac_matches[i]);
+    free(ac_matches);
+  }
+  ac_matches = NULL;
+  ac_count = ac_index = ac_prefixlen = ac_startx = ac_inserted = 0;
+  ac_active = 0;
+}
+
+static void init_buffer(struct editor_config *b) {
+  b->row = NULL;
+  b->rowoff = 0;
+  b->coloff = 0;
+  b->numrows = 0;
+  b->cx = 0;
+  b->cy = 0;
+  b->rx = 0;
+  if (get_window_size(&b->screen_rows, &b->screen_cols) == -1) {
+    die("get_window_size");
+  }
+  b->screen_rows -= 3;
+  b->filename = NULL;
+  b->statusmsg[0] = '\0';
+  b->statusmsg_time = 0;
+  b->dirty = 0;
+  b->readonly = 0;
+  b->syntax = NULL;
+  b->mode = MODE_NORMAL;
+}
 
 /* Syntax highlighting */
 
@@ -44,23 +93,17 @@ struct editorSyntax HLDB[] = {
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
 
 void init() {
-  E.row = NULL;
-  E.rowoff = 0;
-  E.coloff = 0;
-  E.numrows = 0;
-  E.cx = 0;
-  E.cy = 0;
-  E.rx = 0;
+  E_ = malloc(sizeof(struct editor_config));
+  initscr();
+  cbreak();
+  noecho();
+  keypad(stdscr, TRUE);
+  start_color();
+  init_buffer(E_);
   enable_raw_mode();
-  if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
-    die("get_windows_size");
-  }
-  E.screen_rows -= 2;
-  E.filename = NULL;
-  E.statusmsg[0] = '\0';
-  E.statusmsg_time = 0;
-  E.dirty = 0;
-  E.syntax = NULL;
+  buffers[0] = E_;
+  num_buffers = 1;
+  cur_buffer = 0;
 }
 
 void update_row(erow *row) {
@@ -73,8 +116,9 @@ void update_row(erow *row) {
   }
   row->render[j] = '\0';
   row->rsize = j;
-  
+
   update_syntax(row);
+  highlight_search(row);
 }
 
 void update_syntax(erow *row) {
@@ -197,6 +241,32 @@ void update_syntax(erow *row) {
     update_syntax(&E.row[row->idx + 1]);
 }
 
+void highlight_search(erow *row) {
+  if (!search_active || !search_query) return;
+  const char *p = row->render;
+  regmatch_t m;
+  while (regexec(&search_regex, p, 1, &m, 0) == 0) {
+    for (int i = m.rm_so; i < m.rm_eo && i < row->rsize; i++)
+      row->hl[i] = HL_MATCH;
+    p += m.rm_eo;
+  }
+}
+
+void clear_search() {
+  if (!search_active) return;
+  regfree(&search_regex);
+  free(search_query);
+  search_query = NULL;
+  search_active = 0;
+  struct editor_config *saved = E_;
+  for (int b = 0; b < num_buffers; b++) {
+    E_ = buffers[b];
+    for (int i = 0; i < E.numrows; i++)
+      update_row(&E.row[i]);
+  }
+  E_ = saved;
+}
+
 void insert_row(int at, char *s, size_t len) {
   if (at < 0 || at > E.numrows) {
     return;
@@ -247,17 +317,20 @@ void select_syntax_highlight() {
   }
 }
 
-void open_file(char *filename) {
+int open_file(char *filename) {
   free(E.filename);
   E.filename = strdup(filename);
-  FILE *fp = fopen(filename, "a"); // Ensure the file exists
+  FILE *fp = fopen(filename, "r");
   if (!fp) {
-    die("fopen");
-  }
-  fclose(fp);
-  fp = fopen(filename, "r");
-  if (!fp) {
-    die("fopen");
+    if (errno == ENOENT) {
+      /* new file, just start empty */
+      select_syntax_highlight();
+      set_status_message("New file: %s", filename);
+      return 0;
+    } else {
+      set_status_message("open %s: %s", filename, strerror(errno));
+      return -1;
+    }
   }
   char *line = NULL;
   size_t linecap = 0;
@@ -271,8 +344,9 @@ void open_file(char *filename) {
   }
   free(line);
   fclose(fp);
-  
+
   select_syntax_highlight();
+  return 0;
 }
 
 void insert_enter() {
@@ -288,6 +362,65 @@ void insert_enter() {
   }
   E.cx = 0;
   E.cy++;
+}
+
+void open_line_below() {
+  if (E.cy >= E.numrows) {
+    insert_row(E.numrows, "", 0);
+    E.cy = E.numrows - 1;
+  } else {
+    insert_row(E.cy + 1, "", 0);
+    E.cy++;
+  }
+  E.cx = 0;
+  E.mode = MODE_INSERT;
+}
+
+void move_end_line() {
+  if (E.cy >= E.numrows) return;
+  E.cx = E.row[E.cy].size;
+}
+
+static int is_word_char(int c) { return !is_separator(c); }
+
+void move_word_forward() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) return;
+  while (1) {
+    while (E.cx < row->size && is_word_char(row->chars[E.cx])) E.cx++;
+    while (E.cx < row->size && !is_word_char(row->chars[E.cx])) E.cx++;
+    if (E.cx < row->size) break;
+    if (E.cy + 1 >= E.numrows) break;
+    E.cy++; row = &E.row[E.cy]; E.cx = 0;
+  }
+}
+
+void move_word_backward() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) return;
+  while (1) {
+    while (E.cx > 0 && !is_word_char(row->chars[E.cx-1])) E.cx--;
+    while (E.cx > 0 && is_word_char(row->chars[E.cx-1])) E.cx--;
+    if (E.cx > 0 || E.cy == 0) break;
+    if (E.cy > 0) {
+      E.cy--; row = &E.row[E.cy]; E.cx = row->size;
+    }
+  }
+}
+
+void move_word_end() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) return;
+  while (1) {
+    if (E.cx >= row->size) {
+      if (E.cy + 1 >= E.numrows) return;
+      E.cy++; row = &E.row[E.cy]; E.cx = 0; continue;
+    }
+    if (!is_word_char(row->chars[E.cx])) { E.cx++; continue; }
+    while (E.cx < row->size && is_word_char(row->chars[E.cx])) E.cx++;
+    if (E.cx > 0) E.cx--; /* go to last char */
+    break;
+  }
 }
 
 void row_insert_char(erow *row, int at, int c) {
@@ -423,6 +556,10 @@ char *show_prompt(char *prompt, void (*callback)(char *, int)) {
 }
 
 void save_file() {
+  if (E.readonly) {
+    set_status_message("Cannot save readonly buffer");
+    return;
+  }
   if (E.filename == NULL) {
     E.filename = show_prompt("Save as: %s", NULL);
     if (E.filename == NULL) {
@@ -597,11 +734,25 @@ void move_cursor(int key) {
   }
 }
 
+void draw_tabs(struct abuf *ab) {
+  ab_append(ab, "\x1b[7m", 4);
+  for (int i = 0; i < num_buffers; i++) {
+    const char *name = buffers[i]->filename ? buffers[i]->filename : "[No Name]";
+    if (i == cur_buffer) ab_append(ab, "\x1b[4m", 4); // underline
+    ab_append(ab, name, strlen(name));
+    if (i == cur_buffer) ab_append(ab, "\x1b[24m", 5);
+    if (i < num_buffers - 1) ab_append(ab, " | ", 3);
+  }
+  ab_append(ab, "\x1b[m", 4);
+  ab_append(ab, "\r\n", 2);
+}
+
 void draw_status_bar(struct abuf *ab) {
   ab_append(ab, "\x1b[7m", 4);
   char status[80], rstatus[80];
-  int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-                     E.filename ? E.filename : "[No Name]", E.numrows,
+  int len = snprintf(status, sizeof(status), "%.20s%s - %d lines %s",
+                     E.filename ? E.filename : "[No Name]",
+                     E.readonly ? "[RO]" : "", E.numrows,
                      E.dirty ? "(modified)" : "");
   int rlen = snprintf(rstatus, sizeof(rstatus), "%s | %d/%d",
                      E.syntax ? E.syntax->filetype : "no ft",
@@ -633,6 +784,37 @@ void draw_message_bar(struct abuf *ab) {
   }
 }
 
+static void draw_autocomplete(struct abuf *ab) {
+  if (!ac_active || ac_count == 0) return;
+  int show = ac_count < 5 ? ac_count : 5;
+  int width = 0;
+  for (int i = 0; i < show; i++) {
+    int l = strlen(ac_matches[i]);
+    if (l > width) width = l;
+  }
+  int x = (E.rx - E.coloff) + 1;
+  int y = (E.cy - E.rowoff) + 3;
+  if (y + show + 2 > E.screen_rows + 2)
+    y = E.screen_rows + 2 - show - 2;
+  if (x + width + 2 > E.screen_cols)
+    x = E.screen_cols - width - 2;
+  char buf[32];
+  ab_append(ab, "\x1b[s", 3); /* save cursor */
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH+", y, x);
+  ab_append(ab, buf, strlen(buf));
+  for (int i=0;i<width+2;i++) ab_append(ab, "-", 1);
+  ab_append(ab, "+", 1);
+  for (int i = 0; i < show; i++) {
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH| %-*s |", y+1+i, x, width, ac_matches[i]);
+    ab_append(ab, buf, strlen(buf));
+  }
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH+", y+show+1, x);
+  ab_append(ab, buf, strlen(buf));
+  for (int i=0;i<width+2;i++) ab_append(ab, "-", 1);
+  ab_append(ab, "+", 1);
+  ab_append(ab, "\x1b[u", 3); /* restore cursor */
+}
+
 void draw_rows(struct abuf *ab) {
   for (int y = E.rowoff; y < E.rowoff + E.screen_rows; ++y) {
     if (y >= E.numrows) {
@@ -653,7 +835,7 @@ void draw_rows(struct abuf *ab) {
       for (int j = 0; j < len; j++) {
         if (hl[j] == HL_NORMAL) {
           if (current_color != -1) {
-            ab_append(ab, "\x1b[39m", 5);
+            ab_append(ab, "\x1b[0m", 4);
             current_color = -1;
           }
           ab_append(ab, &c[j], 1);
@@ -668,14 +850,14 @@ void draw_rows(struct abuf *ab) {
           ab_append(ab, &c[j], 1);
         }
       }
-      ab_append(ab, "\x1b[39m", 5);
+      ab_append(ab, "\x1b[0m", 4);
     }
     ab_append(ab, "\x1b[K", 3);
     ab_append(ab, "\r\n", 2);
   }
 }
 
-void scroll() {
+void editor_scroll() {
   E.rx = 0;
   if (E.cy < E.numrows) {
     E.rx = cx_to_rx(&E.row[E.cy], E.cx);
@@ -695,15 +877,17 @@ void scroll() {
 }
 
 void refresh_screen() {
-  scroll();
+  editor_scroll();
   struct abuf ab = ABUF_INIT;
   ab_append(&ab, "\x1b[?25l", 6); // Hide cursor
   ab_append(&ab, "\x1b[H", 3);
+  draw_tabs(&ab);
   draw_rows(&ab);
   draw_status_bar(&ab);
   draw_message_bar(&ab);
+  draw_autocomplete(&ab);
   char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1,
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2,
            (E.rx - E.coloff) + 1);
   ab_append(&ab, buf, strlen(buf));
   ab_append(&ab, "\x1b[?25h", 6); // Show cursor
@@ -733,7 +917,7 @@ int syntax_to_color(int hl) {
     case HL_KEYWORD2: return 32;   // Green
     case HL_STRING: return 35;     // Magenta
     case HL_NUMBER: return 31;     // Red
-    case HL_MATCH: return 34;      // Blue
+    case HL_MATCH: return 43;      // Yellow background
     default: return 37;            // White
   }
 }
@@ -741,51 +925,342 @@ int syntax_to_color(int hl) {
 void process_key_press() {
   static int quit_times = 1;
   int c = read_key();
-  switch (c) {
-  case ESCAPE:
-  case CTRL_KEY('l'):
-    break;
-  case CTRL_KEY('q'):
-    if (E.dirty && quit_times > 0) {
-      set_status_message("Unsaved changes! Press Ctrl+q again to quit.");
-      quit_times--;
-      return;
+  if (E.mode == MODE_INSERT) {
+    switch (c) {
+    case ESCAPE:
+      if (ac_active) {
+        while (ac_inserted--) del_char();
+        ac_reset();
+      } else {
+        E.mode = MODE_NORMAL;
+      }
+      break;
+    case '\t':
+      autocomplete();
+      break;
+    default:
+      if (ac_active) {
+        ac_reset();
+      }
+      if (c == BACKSPACE || c == DEL_KEY || c == CTRL_KEY('h')) {
+        if (c == DEL_KEY)
+          move_cursor(ARROW_RIGHT);
+        del_char();
+      } else if (c == '\r' || c == '\n') {
+        insert_enter();
+      } else {
+        insert_char(c);
+      }
     }
-    clear_screen();
-    exit(0);
-    break;
-  case CTRL_KEY('s'):
-    save_file();
-    break;
-  case '\r':
-  case '\n':
-    insert_enter();
-    break;
-  case BACKSPACE:
-  case DEL_KEY:
-  case CTRL_KEY('h'):
-    if (c == DEL_KEY) {
+  } else {
+    switch (c) {
+    case 'i':
+      E.mode = MODE_INSERT;
+      break;
+    case 'o':
+      open_line_below();
+      break;
+    case 'h':
+      move_cursor(ARROW_LEFT);
+      break;
+    case 'j':
+      move_cursor(ARROW_DOWN);
+      break;
+    case 'k':
+      move_cursor(ARROW_UP);
+      break;
+    case 'l':
       move_cursor(ARROW_RIGHT);
+      break;
+    case 'w':
+      move_word_forward();
+      break;
+    case 'b':
+      move_word_backward();
+      break;
+    case 'e':
+      move_word_end();
+      break;
+    case '$':
+      move_end_line();
+      break;
+    case 'n':
+      search_next(1);
+      break;
+    case 'N':
+      search_next(-1);
+      break;
+    case ':':
+      command_mode();
+      break;
+    case '/':
+      search_mode();
+      break;
+    case CTRL_KEY('f'):
+      search_mode();
+      break;
+    case CTRL_KEY('n'):
+      switch_buffer((cur_buffer + 1) % num_buffers);
+      break;
+    case CTRL_KEY('p'):
+      switch_buffer((cur_buffer - 1 + num_buffers) % num_buffers);
+      break;
+    case CTRL_KEY('q'):
+      if (E.dirty && quit_times > 0) {
+        set_status_message("Unsaved changes! Press Ctrl+q again to quit.");
+        quit_times--;
+        return;
+      }
+      clear_screen();
+      exit(0);
+      break;
+    case CTRL_KEY('s'):
+      save_file();
+      break;
     }
-    del_char();
-    break;
-  case CTRL_KEY('f'):
-    find();
-    break;
-  case ARROW_DOWN:
-  case ARROW_UP:
-  case ARROW_RIGHT:
-  case ARROW_LEFT:
-    move_cursor(c);
-    break;
-  case PAGE_UP:
-  case PAGE_DOWN: {
-    int times = E.screen_rows;
-    while (times--)
-      move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
-  } break;
-  default:
-    insert_char(c);
   }
   quit_times = 1;
+}
+
+void switch_buffer(int idx) {
+  if (idx < 0 || idx >= num_buffers) return;
+  cur_buffer = idx;
+  E_ = buffers[cur_buffer];
+  select_syntax_highlight();
+}
+
+static void free_buffer(struct editor_config *b) {
+  for (int i = 0; i < b->numrows; i++) {
+    free(b->row[i].chars);
+    free(b->row[i].render);
+    free(b->row[i].hl);
+  }
+  free(b->row);
+  free(b->filename);
+  free(b);
+}
+
+void close_current_buffer() {
+  if (num_buffers <= 1) return; // keep at least one
+  free_buffer(buffers[cur_buffer]);
+  memmove(&buffers[cur_buffer], &buffers[cur_buffer+1],
+          sizeof(struct editor_config*) * (num_buffers - cur_buffer - 1));
+  num_buffers--;
+  if (cur_buffer >= num_buffers) cur_buffer = num_buffers - 1;
+  E_ = buffers[cur_buffer];
+  select_syntax_highlight();
+}
+
+void open_new_file(char *filename, int readonly) {
+  if (num_buffers >= 10) return;
+  buffers[num_buffers] = malloc(sizeof(struct editor_config));
+  init_buffer(buffers[num_buffers]);
+  E_ = buffers[num_buffers];
+  if (filename) {
+    if (open_file(filename) < 0) {
+      /* leave empty buffer on error */
+        free(E.filename);
+        E.filename = strdup(filename);
+    }
+  }
+  E.readonly = readonly;
+  num_buffers++;
+  cur_buffer = num_buffers - 1;
+}
+
+void autocomplete() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) { ac_reset(); return; }
+  int i = E.cx - 1;
+  while (i >= 0 && (isalnum(row->chars[i]) || row->chars[i]=='_')) i--;
+  int start = i + 1;
+  int len = E.cx - start;
+  if (!ac_active) {
+    if (len <= 0) { insert_char('\t'); return; }
+    char prefix[32];
+    if (len >= (int)sizeof(prefix)) return;
+    memcpy(prefix, &row->chars[start], len);
+    prefix[len] = '\0';
+    char **keywords = E.syntax ? E.syntax->keywords : NULL;
+    if (keywords) {
+      for (int k=0; keywords[k]; k++) {
+        if (strncmp(keywords[k], prefix, len)==0) {
+          const char *kw = keywords[k];
+          int kwlen = strlen(kw);
+          if (kw[kwlen-1]=='|') kwlen--;
+          ac_matches = realloc(ac_matches, sizeof(char*)*(ac_count+1));
+          ac_matches[ac_count++] = strndup(kw, kwlen);
+        }
+      }
+    }
+    for (int r=0; r<E.numrows; r++) {
+      char *p = E.row[r].chars;
+      while (*p) {
+        while (*p && is_separator(*p)) p++;
+        char *startw = p;
+        while (*p && !is_separator(*p)) p++;
+        int wlen = p - startw;
+        if (wlen >= len && strncmp(startw, prefix, len)==0) {
+          char word[64];
+          if (wlen >= (int)sizeof(word)) wlen = sizeof(word)-1;
+          memcpy(word, startw, wlen); word[wlen] = '\0';
+          int exists = 0;
+          for (int j=0;j<ac_count;j++) if (strcmp(ac_matches[j], word)==0) {exists=1;break;}
+          if (!exists) {
+            ac_matches = realloc(ac_matches, sizeof(char*)*(ac_count+1));
+            ac_matches[ac_count++] = strdup(word);
+          }
+        }
+      }
+    }
+    if (ac_count == 0) { insert_char('\t'); ac_reset(); return; }
+    ac_active = 1; ac_index = 0; ac_prefixlen = len; ac_startx = start;
+  } else {
+    while (ac_inserted--) del_char();
+    ac_index = (ac_index + 1) % ac_count;
+  }
+  const char *kw = ac_matches[ac_index];
+  int kwlen = strlen(kw);
+  ac_inserted = kwlen - ac_prefixlen;
+  for (int j=ac_prefixlen; j<kwlen; j++) {
+    insert_char(kw[j]);
+  }
+}
+
+static void command_execute(char *cmd) {
+  if (strcmp(cmd, "q") == 0) {
+    clear_screen();
+    exit(0);
+  } else if (strcmp(cmd, "w") == 0) {
+    save_file();
+  } else if (strcmp(cmd, "bn") == 0) {
+    switch_buffer((cur_buffer + 1) % num_buffers);
+  } else if (strcmp(cmd, "bp") == 0) {
+    switch_buffer((cur_buffer - 1 + num_buffers) % num_buffers);
+  } else if (strcmp(cmd, "bd") == 0) {
+    close_current_buffer();
+  } else if (!strncmp(cmd, "e ", 2)) {
+    open_new_file(cmd + 2, 0);
+  } else if (strcmp(cmd, "help") == 0) {
+    open_new_file("help.txt", 1);
+  } else if (strcmp(cmd, "noh") == 0) {
+    clear_search();
+  } else if (strncmp(cmd, "s/", 2) == 0) {
+    char *pat = cmd + 2;
+    char *p = strchr(pat, '/');
+    if (p) {
+      *p = '\0';
+      char *repl = p + 1;
+      char *end = strchr(repl, '/');
+      if (end) {
+        *end = '\0';
+        substitute(pat, repl);
+      }
+    }
+  }
+}
+
+void command_mode() {
+  char *cmd = show_prompt(":%s", NULL);
+  if (cmd) {
+    command_execute(cmd);
+    free(cmd);
+  }
+}
+
+void search_mode() {
+  char *pat = show_prompt("/%s", NULL);
+  if (!pat) return;
+  clear_search();
+  if (regcomp(&search_regex, pat, REG_EXTENDED)) {
+    free(pat);
+    return;
+  }
+  search_query = pat;
+  search_active = 1;
+  for (int i = 0; i < E.numrows; i++) highlight_search(&E.row[i]);
+  search_next(1);
+}
+
+void search_next(int dir) {
+  if (!search_active) return;
+  int r = E.cy;
+  int c = E.cx + (dir == 1 ? 1 : -1);
+  if (dir == 1) {
+    for (; r < E.numrows; r++) {
+      char *start = E.row[r].chars;
+      if (r == E.cy && c > 0) start += c;
+      regmatch_t m;
+      if (regexec(&search_regex, start, 1, &m, 0) == 0) {
+        E.cy = r;
+        E.cx = (start - E.row[r].chars) + m.rm_so;
+        E.rowoff = E.numrows;
+        return;
+      }
+      c = 0;
+    }
+  } else {
+    for (; r >= 0; r--) {
+      char *text = E.row[r].chars;
+      char *p = text;
+      char *last = NULL;
+      regmatch_t m;
+      while (regexec(&search_regex, p, 1, &m, 0) == 0) {
+        if (r == E.cy && p - text + m.rm_so >= c) break;
+        last = p + m.rm_so;
+        p += m.rm_eo;
+      }
+      if (last) {
+        E.cy = r;
+        E.cx = last - text;
+        E.rowoff = E.numrows;
+        return;
+      }
+      c = INT_MAX;
+    }
+  }
+}
+
+void substitute(char *pat, char *repl) {
+  regex_t reg;
+  clear_search();
+  if (regcomp(&reg, pat, REG_EXTENDED)) return;
+  for (int r = 0; r < E.numrows; r++) {
+    erow *row = &E.row[r];
+    char *p = row->chars;
+    char *out = NULL;
+    size_t outlen = 0;
+    int replaced = 0;
+    regmatch_t m;
+    while (regexec(&reg, p, 1, &m, 0) == 0) {
+      replaced = 1;
+      out = realloc(out, outlen + m.rm_so + strlen(repl) + 1);
+      memcpy(out + outlen, p, m.rm_so);
+      outlen += m.rm_so;
+      memcpy(out + outlen, repl, strlen(repl));
+      outlen += strlen(repl);
+      p += m.rm_eo;
+    }
+    if (replaced) {
+      size_t remain = strlen(p);
+      out = realloc(out, outlen + remain + 1);
+      memcpy(out + outlen, p, remain);
+      outlen += remain;
+      out[outlen] = '\0';
+      free(row->chars);
+      row->chars = out;
+      row->size = outlen;
+      update_row(row);
+    } else {
+      free(out);
+    }
+  }
+  regfree(&reg);
+  if (regcomp(&search_regex, repl, REG_EXTENDED) == 0) {
+    search_query = strdup(repl);
+    search_active = 1;
+    for (int i = 0; i < E.numrows; i++) highlight_search(&E.row[i]);
+  } else {
+    search_active = 0;
+  }
 }
