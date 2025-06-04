@@ -302,17 +302,20 @@ void select_syntax_highlight() {
   }
 }
 
-void open_file(char *filename) {
+int open_file(char *filename) {
   free(E.filename);
   E.filename = strdup(filename);
-  FILE *fp = fopen(filename, "a"); // Ensure the file exists
+  FILE *fp = fopen(filename, "r");
   if (!fp) {
-    die("fopen");
-  }
-  fclose(fp);
-  fp = fopen(filename, "r");
-  if (!fp) {
-    die("fopen");
+    if (errno == ENOENT) {
+      /* new file, just start empty */
+      select_syntax_highlight();
+      set_status_message("New file: %s", filename);
+      return 0;
+    } else {
+      set_status_message("open %s: %s", filename, strerror(errno));
+      return -1;
+    }
   }
   char *line = NULL;
   size_t linecap = 0;
@@ -326,8 +329,9 @@ void open_file(char *filename) {
   }
   free(line);
   fclose(fp);
-  
+
   select_syntax_highlight();
+  return 0;
 }
 
 void insert_enter() {
@@ -1037,7 +1041,13 @@ void open_new_file(char *filename, int readonly) {
   buffers[num_buffers] = malloc(sizeof(struct editor_config));
   init_buffer(buffers[num_buffers]);
   E_ = buffers[num_buffers];
-  if (filename) open_file(filename);
+  if (filename) {
+    if (open_file(filename) < 0) {
+      /* leave empty buffer on error */
+        free(E.filename);
+        E.filename = strdup(filename);
+    }
+  }
   E.readonly = readonly;
   num_buffers++;
   cur_buffer = num_buffers - 1;

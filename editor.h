@@ -103,7 +103,7 @@ void draw_tabs(struct abuf *ab);
 void refresh_screen();
 void process_key_press();
 void move_cursor(int key);
-void open_file(char *filename);
+int open_file(char *filename);
 void insert_row(int at, char *s, size_t len);
 void set_status_message(const char *fmt, ...);
 void update_syntax(erow *row);
