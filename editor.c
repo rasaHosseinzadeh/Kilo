@@ -820,7 +820,7 @@ void draw_rows(struct abuf *ab) {
       for (int j = 0; j < len; j++) {
         if (hl[j] == HL_NORMAL) {
           if (current_color != -1) {
-            ab_append(ab, "\x1b[39m", 5);
+            ab_append(ab, "\x1b[0m", 4);
             current_color = -1;
           }
           ab_append(ab, &c[j], 1);
@@ -835,7 +835,7 @@ void draw_rows(struct abuf *ab) {
           ab_append(ab, &c[j], 1);
         }
       }
-      ab_append(ab, "\x1b[39m", 5);
+      ab_append(ab, "\x1b[0m", 4);
     }
     ab_append(ab, "\x1b[K", 3);
     ab_append(ab, "\r\n", 2);
@@ -902,7 +902,7 @@ int syntax_to_color(int hl) {
     case HL_KEYWORD2: return 32;   // Green
     case HL_STRING: return 35;     // Magenta
     case HL_NUMBER: return 31;     // Red
-    case HL_MATCH: return 34;      // Blue
+    case HL_MATCH: return 43;      // Yellow background
     default: return 37;            // White
   }
 }
@@ -1137,9 +1137,7 @@ static void command_execute(char *cmd) {
       char *end = strchr(repl, '/');
       if (end) {
         *end = '\0';
-        char *flags = end + 1;
-        int global = flags && strcmp(flags, "g") == 0;
-        substitute(pat, repl, global);
+        substitute(pat, repl);
       }
     }
   }
@@ -1209,7 +1207,7 @@ void search_next(int dir) {
   }
 }
 
-void substitute(char *pat, char *repl, int global) {
+void substitute(char *pat, char *repl) {
   regex_t reg;
   if (regcomp(&reg, pat, REG_EXTENDED)) return;
   for (int r = 0; r < E.numrows; r++) {
@@ -1227,7 +1225,6 @@ void substitute(char *pat, char *repl, int global) {
       memcpy(out + outlen, repl, strlen(repl));
       outlen += strlen(repl);
       p += m.rm_eo;
-      if (!global) break;
     }
     if (replaced) {
       size_t remain = strlen(p);
@@ -1239,7 +1236,6 @@ void substitute(char *pat, char *repl, int global) {
       row->chars = out;
       row->size = outlen;
       update_row(row);
-      if (!global) break;
     } else {
       free(out);
     }

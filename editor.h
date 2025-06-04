@@ -122,7 +122,7 @@ void open_new_file(char *filename, int readonly);
 void autocomplete();
 void command_mode();
 void search_mode();
-void substitute(char *pattern, char *repl, int global);
+void substitute(char *pattern, char *repl);
 void search_next(int dir);
 void highlight_search(erow *row);
 
