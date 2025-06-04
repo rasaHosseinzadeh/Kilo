@@ -5,6 +5,26 @@ static struct editor_config *buffers[10];
 static int num_buffers = 0;
 static int cur_buffer = 0;
 
+/* Autocomplete state */
+static char **ac_matches = NULL;
+static int ac_count = 0;
+static int ac_index = 0;
+static int ac_prefixlen = 0;
+static int ac_startx = 0;
+static int ac_inserted = 0;
+static int ac_active = 0;
+
+static void ac_reset() {
+  if (ac_matches) {
+    for (int i = 0; i < ac_count; i++)
+      free(ac_matches[i]);
+    free(ac_matches);
+  }
+  ac_matches = NULL;
+  ac_count = ac_index = ac_prefixlen = ac_startx = ac_inserted = 0;
+  ac_active = 0;
+}
+
 static void init_buffer(struct editor_config *b) {
   b->row = NULL;
   b->rowoff = 0;
@@ -305,6 +325,65 @@ void insert_enter() {
   }
   E.cx = 0;
   E.cy++;
+}
+
+void open_line_below() {
+  if (E.cy >= E.numrows) {
+    insert_row(E.numrows, "", 0);
+    E.cy = E.numrows - 1;
+  } else {
+    insert_row(E.cy + 1, "", 0);
+    E.cy++;
+  }
+  E.cx = 0;
+  E.mode = MODE_INSERT;
+}
+
+void move_end_line() {
+  if (E.cy >= E.numrows) return;
+  E.cx = E.row[E.cy].size;
+}
+
+static int is_word_char(int c) { return !is_separator(c); }
+
+void move_word_forward() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) return;
+  while (1) {
+    while (E.cx < row->size && is_word_char(row->chars[E.cx])) E.cx++;
+    while (E.cx < row->size && !is_word_char(row->chars[E.cx])) E.cx++;
+    if (E.cx < row->size) break;
+    if (E.cy + 1 >= E.numrows) break;
+    E.cy++; row = &E.row[E.cy]; E.cx = 0;
+  }
+}
+
+void move_word_backward() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) return;
+  while (1) {
+    while (E.cx > 0 && !is_word_char(row->chars[E.cx-1])) E.cx--;
+    while (E.cx > 0 && is_word_char(row->chars[E.cx-1])) E.cx--;
+    if (E.cx > 0 || E.cy == 0) break;
+    if (E.cy > 0) {
+      E.cy--; row = &E.row[E.cy]; E.cx = row->size;
+    }
+  }
+}
+
+void move_word_end() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) return;
+  while (1) {
+    if (E.cx >= row->size) {
+      if (E.cy + 1 >= E.numrows) return;
+      E.cy++; row = &E.row[E.cy]; E.cx = 0; continue;
+    }
+    if (!is_word_char(row->chars[E.cx])) { E.cx++; continue; }
+    while (E.cx < row->size && is_word_char(row->chars[E.cx])) E.cx++;
+    if (E.cx > 0) E.cx--; /* go to last char */
+    break;
+  }
 }
 
 void row_insert_char(erow *row, int at, int c) {
@@ -761,12 +840,20 @@ void process_key_press() {
   if (E.mode == MODE_INSERT) {
     switch (c) {
     case ESCAPE:
-      E.mode = MODE_NORMAL;
+      if (ac_active) {
+        while (ac_inserted--) del_char();
+        ac_reset();
+      } else {
+        E.mode = MODE_NORMAL;
+      }
       break;
     case '\t':
       autocomplete();
       break;
     default:
+      if (ac_active) {
+        ac_reset();
+      }
       if (c == BACKSPACE || c == DEL_KEY || c == CTRL_KEY('h')) {
         if (c == DEL_KEY)
           move_cursor(ARROW_RIGHT);
@@ -782,6 +869,9 @@ void process_key_press() {
     case 'i':
       E.mode = MODE_INSERT;
       break;
+    case 'o':
+      open_line_below();
+      break;
     case 'h':
       move_cursor(ARROW_LEFT);
       break;
@@ -793,6 +883,18 @@ void process_key_press() {
       break;
     case 'l':
       move_cursor(ARROW_RIGHT);
+      break;
+    case 'w':
+      move_word_forward();
+      break;
+    case 'b':
+      move_word_backward();
+      break;
+    case 'e':
+      move_word_end();
+      break;
+    case '$':
+      move_end_line();
       break;
     case ':':
       command_mode();
@@ -845,29 +947,40 @@ void open_new_file(char *filename) {
 
 void autocomplete() {
   erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
-  if (!row) return;
+  if (!row) { ac_reset(); return; }
   int i = E.cx - 1;
   while (i >= 0 && (isalnum(row->chars[i]) || row->chars[i]=='_')) i--;
   int start = i + 1;
   int len = E.cx - start;
-  if (len <= 0) return;
-  char prefix[32];
-  if (len >= (int)sizeof(prefix)) return;
-  memcpy(prefix, &row->chars[start], len);
-  prefix[len] = '\0';
-  char **keywords = NULL;
-  if (E.syntax) keywords = E.syntax->keywords;
-  if (!keywords) return;
-  for (int k=0; keywords[k]; k++) {
-    if (strncmp(keywords[k], prefix, len)==0) {
-      const char *kw = keywords[k];
-      int kwlen = strlen(kw);
-      if (kw[kwlen-1]=='|') kwlen--;
-      for (int j=len; j<kwlen; j++) {
-        insert_char(kw[j]);
+  if (!ac_active) {
+    if (len <= 0) { insert_char('\t'); return; }
+    char prefix[32];
+    if (len >= (int)sizeof(prefix)) return;
+    memcpy(prefix, &row->chars[start], len);
+    prefix[len] = '\0';
+    char **keywords = E.syntax ? E.syntax->keywords : NULL;
+    if (!keywords) { insert_char('\t'); return; }
+    for (int k=0; keywords[k]; k++) {
+      if (strncmp(keywords[k], prefix, len)==0) {
+        const char *kw = keywords[k];
+        int kwlen = strlen(kw);
+        if (kw[kwlen-1]=='|') kwlen--;
+        ac_matches = realloc(ac_matches, sizeof(char*)*(ac_count+1));
+        ac_matches[ac_count] = strndup(kw, kwlen);
+        ac_count++;
       }
-      break;
     }
+    if (ac_count == 0) { insert_char('\t'); ac_reset(); return; }
+    ac_active = 1; ac_index = 0; ac_prefixlen = len; ac_startx = start;
+  } else {
+    while (ac_inserted--) del_char();
+    ac_index = (ac_index + 1) % ac_count;
+  }
+  const char *kw = ac_matches[ac_index];
+  int kwlen = strlen(kw);
+  ac_inserted = kwlen - ac_prefixlen;
+  for (int j=ac_prefixlen; j<kwlen; j++) {
+    insert_char(kw[j]);
   }
 }
 

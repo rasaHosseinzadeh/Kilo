@@ -3,6 +3,7 @@ Kilo Help
 
 Normal mode commands:
   i     - switch to insert mode
+  o     - open new line below and insert
   :help - open this help
   :w    - save file
   :q    - quit
@@ -12,4 +13,5 @@ Normal mode commands:
 
 Movement keys in normal mode:
   h - left, j - down, k - up, l - right
+  w - next word, b - previous word, e - end of word, $ - end of line
 
