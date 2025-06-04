@@ -258,8 +258,13 @@ void clear_search() {
   free(search_query);
   search_query = NULL;
   search_active = 0;
-  for (int i = 0; i < E.numrows; i++)
-    update_row(&E.row[i]);
+  struct editor_config *saved = E_;
+  for (int b = 0; b < num_buffers; b++) {
+    E_ = buffers[b];
+    for (int i = 0; i < E.numrows; i++)
+      update_row(&E.row[i]);
+  }
+  E_ = saved;
 }
 
 void insert_row(int at, char *s, size_t len) {
