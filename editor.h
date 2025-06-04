@@ -64,6 +64,7 @@ struct editor_config {
   int screen_rows, screen_cols;
   int numrows;
   int dirty;
+  int readonly;
   erow *row;
   char *filename;
   char statusmsg[80];
@@ -97,6 +98,7 @@ enum editorKey {
 void init();
 int read_key();
 void draw_rows(struct abuf *ab);
+void draw_tabs(struct abuf *ab);
 void refresh_screen();
 void process_key_press();
 void move_cursor(int key);
@@ -114,7 +116,8 @@ void move_word_backward();
 void move_word_end();
 void move_end_line();
 void switch_buffer(int idx);
-void open_new_file(char *filename);
+void close_current_buffer();
+void open_new_file(char *filename, int readonly);
 void autocomplete();
 void command_mode();
 void search_mode();

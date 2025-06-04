@@ -36,11 +36,12 @@ static void init_buffer(struct editor_config *b) {
   if (get_window_size(&b->screen_rows, &b->screen_cols) == -1) {
     die("get_window_size");
   }
-  b->screen_rows -= 2;
+  b->screen_rows -= 3;
   b->filename = NULL;
   b->statusmsg[0] = '\0';
   b->statusmsg_time = 0;
   b->dirty = 0;
+  b->readonly = 0;
   b->syntax = NULL;
   b->mode = MODE_NORMAL;
 }
@@ -519,6 +520,10 @@ char *show_prompt(char *prompt, void (*callback)(char *, int)) {
 }
 
 void save_file() {
+  if (E.readonly) {
+    set_status_message("Cannot save readonly buffer");
+    return;
+  }
   if (E.filename == NULL) {
     E.filename = show_prompt("Save as: %s", NULL);
     if (E.filename == NULL) {
@@ -693,11 +698,25 @@ void move_cursor(int key) {
   }
 }
 
+void draw_tabs(struct abuf *ab) {
+  ab_append(ab, "\x1b[7m", 4);
+  for (int i = 0; i < num_buffers; i++) {
+    const char *name = buffers[i]->filename ? buffers[i]->filename : "[No Name]";
+    if (i == cur_buffer) ab_append(ab, "\x1b[4m", 4); // underline
+    ab_append(ab, name, strlen(name));
+    if (i == cur_buffer) ab_append(ab, "\x1b[24m", 5);
+    if (i < num_buffers - 1) ab_append(ab, " | ", 3);
+  }
+  ab_append(ab, "\x1b[m", 4);
+  ab_append(ab, "\r\n", 2);
+}
+
 void draw_status_bar(struct abuf *ab) {
   ab_append(ab, "\x1b[7m", 4);
   char status[80], rstatus[80];
-  int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-                     E.filename ? E.filename : "[No Name]", E.numrows,
+  int len = snprintf(status, sizeof(status), "%.20s%s - %d lines %s",
+                     E.filename ? E.filename : "[No Name]",
+                     E.readonly ? "[RO]" : "", E.numrows,
                      E.dirty ? "(modified)" : "");
   int rlen = snprintf(rstatus, sizeof(rstatus), "%s | %d/%d",
                      E.syntax ? E.syntax->filetype : "no ft",
@@ -795,11 +814,12 @@ void refresh_screen() {
   struct abuf ab = ABUF_INIT;
   ab_append(&ab, "\x1b[?25l", 6); // Hide cursor
   ab_append(&ab, "\x1b[H", 3);
+  draw_tabs(&ab);
   draw_rows(&ab);
   draw_status_bar(&ab);
   draw_message_bar(&ab);
   char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1,
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2,
            (E.rx - E.coloff) + 1);
   ab_append(&ab, buf, strlen(buf));
   ab_append(&ab, "\x1b[?25h", 6); // Show cursor
@@ -935,12 +955,35 @@ void switch_buffer(int idx) {
   select_syntax_highlight();
 }
 
-void open_new_file(char *filename) {
+static void free_buffer(struct editor_config *b) {
+  for (int i = 0; i < b->numrows; i++) {
+    free(b->row[i].chars);
+    free(b->row[i].render);
+    free(b->row[i].hl);
+  }
+  free(b->row);
+  free(b->filename);
+  free(b);
+}
+
+void close_current_buffer() {
+  if (num_buffers <= 1) return; // keep at least one
+  free_buffer(buffers[cur_buffer]);
+  memmove(&buffers[cur_buffer], &buffers[cur_buffer+1],
+          sizeof(struct editor_config*) * (num_buffers - cur_buffer - 1));
+  num_buffers--;
+  if (cur_buffer >= num_buffers) cur_buffer = num_buffers - 1;
+  E_ = buffers[cur_buffer];
+  select_syntax_highlight();
+}
+
+void open_new_file(char *filename, int readonly) {
   if (num_buffers >= 10) return;
   buffers[num_buffers] = malloc(sizeof(struct editor_config));
   init_buffer(buffers[num_buffers]);
   E_ = buffers[num_buffers];
   if (filename) open_file(filename);
+  E.readonly = readonly;
   num_buffers++;
   cur_buffer = num_buffers - 1;
 }
@@ -959,15 +1002,35 @@ void autocomplete() {
     memcpy(prefix, &row->chars[start], len);
     prefix[len] = '\0';
     char **keywords = E.syntax ? E.syntax->keywords : NULL;
-    if (!keywords) { insert_char('\t'); return; }
-    for (int k=0; keywords[k]; k++) {
-      if (strncmp(keywords[k], prefix, len)==0) {
-        const char *kw = keywords[k];
-        int kwlen = strlen(kw);
-        if (kw[kwlen-1]=='|') kwlen--;
-        ac_matches = realloc(ac_matches, sizeof(char*)*(ac_count+1));
-        ac_matches[ac_count] = strndup(kw, kwlen);
-        ac_count++;
+    if (keywords) {
+      for (int k=0; keywords[k]; k++) {
+        if (strncmp(keywords[k], prefix, len)==0) {
+          const char *kw = keywords[k];
+          int kwlen = strlen(kw);
+          if (kw[kwlen-1]=='|') kwlen--;
+          ac_matches = realloc(ac_matches, sizeof(char*)*(ac_count+1));
+          ac_matches[ac_count++] = strndup(kw, kwlen);
+        }
+      }
+    }
+    for (int r=0; r<E.numrows; r++) {
+      char *p = E.row[r].chars;
+      while (*p) {
+        while (*p && is_separator(*p)) p++;
+        char *startw = p;
+        while (*p && !is_separator(*p)) p++;
+        int wlen = p - startw;
+        if (wlen >= len && strncmp(startw, prefix, len)==0) {
+          char word[64];
+          if (wlen >= (int)sizeof(word)) wlen = sizeof(word)-1;
+          memcpy(word, startw, wlen); word[wlen] = '\0';
+          int exists = 0;
+          for (int j=0;j<ac_count;j++) if (strcmp(ac_matches[j], word)==0) {exists=1;break;}
+          if (!exists) {
+            ac_matches = realloc(ac_matches, sizeof(char*)*(ac_count+1));
+            ac_matches[ac_count++] = strdup(word);
+          }
+        }
       }
     }
     if (ac_count == 0) { insert_char('\t'); ac_reset(); return; }
@@ -990,8 +1053,16 @@ static void command_execute(char *cmd) {
     exit(0);
   } else if (strcmp(cmd, "w") == 0) {
     save_file();
+  } else if (strcmp(cmd, "bn") == 0) {
+    switch_buffer((cur_buffer + 1) % num_buffers);
+  } else if (strcmp(cmd, "bp") == 0) {
+    switch_buffer((cur_buffer - 1 + num_buffers) % num_buffers);
+  } else if (strcmp(cmd, "bd") == 0) {
+    close_current_buffer();
+  } else if (!strncmp(cmd, "e ", 2)) {
+    open_new_file(cmd + 2, 0);
   } else if (strcmp(cmd, "help") == 0) {
-    open_new_file("help.txt");
+    open_new_file("help.txt", 1);
   } else if (strncmp(cmd, "s/", 2) == 0) {
     char *p = strchr(cmd+2, '/');
     if (p) {

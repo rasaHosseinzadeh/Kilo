@@ -11,6 +11,15 @@ Normal mode commands:
   /pat  - search for pattern using regex
   Tab   - autocomplete keywords when in insert mode
 
+Buffers and tabs:
+  :e <file>  - open file in a new buffer/tab
+  :bn        - next buffer
+  :bp        - previous buffer
+  :bd        - close current buffer
+  :help      - open this help. Use :bd or Ctrl+p/Ctrl+n to return.
+
+Saving the help buffer is disabled.
+
 Movement keys in normal mode:
   h - left, j - down, k - up, l - right
   w - next word, b - previous word, e - end of word, $ - end of line
