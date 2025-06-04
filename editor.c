@@ -1,6 +1,29 @@
 #include "editor.h"
 
-struct editor_config E;
+struct editor_config *E_;
+static struct editor_config *buffers[10];
+static int num_buffers = 0;
+static int cur_buffer = 0;
+
+static void init_buffer(struct editor_config *b) {
+  b->row = NULL;
+  b->rowoff = 0;
+  b->coloff = 0;
+  b->numrows = 0;
+  b->cx = 0;
+  b->cy = 0;
+  b->rx = 0;
+  if (get_window_size(&b->screen_rows, &b->screen_cols) == -1) {
+    die("get_window_size");
+  }
+  b->screen_rows -= 2;
+  b->filename = NULL;
+  b->statusmsg[0] = '\0';
+  b->statusmsg_time = 0;
+  b->dirty = 0;
+  b->syntax = NULL;
+  b->mode = MODE_NORMAL;
+}
 
 /* Syntax highlighting */
 
@@ -44,23 +67,17 @@ struct editorSyntax HLDB[] = {
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
 
 void init() {
-  E.row = NULL;
-  E.rowoff = 0;
-  E.coloff = 0;
-  E.numrows = 0;
-  E.cx = 0;
-  E.cy = 0;
-  E.rx = 0;
+  E_ = malloc(sizeof(struct editor_config));
+  initscr();
+  cbreak();
+  noecho();
+  keypad(stdscr, TRUE);
+  start_color();
+  init_buffer(E_);
   enable_raw_mode();
-  if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
-    die("get_windows_size");
-  }
-  E.screen_rows -= 2;
-  E.filename = NULL;
-  E.statusmsg[0] = '\0';
-  E.statusmsg_time = 0;
-  E.dirty = 0;
-  E.syntax = NULL;
+  buffers[0] = E_;
+  num_buffers = 1;
+  cur_buffer = 0;
 }
 
 void update_row(erow *row) {
@@ -675,7 +692,7 @@ void draw_rows(struct abuf *ab) {
   }
 }
 
-void scroll() {
+void editor_scroll() {
   E.rx = 0;
   if (E.cy < E.numrows) {
     E.rx = cx_to_rx(&E.row[E.cy], E.cx);
@@ -695,7 +712,7 @@ void scroll() {
 }
 
 void refresh_screen() {
-  scroll();
+  editor_scroll();
   struct abuf ab = ABUF_INIT;
   ab_append(&ab, "\x1b[?25l", 6); // Hide cursor
   ab_append(&ab, "\x1b[H", 3);
@@ -741,51 +758,186 @@ int syntax_to_color(int hl) {
 void process_key_press() {
   static int quit_times = 1;
   int c = read_key();
-  switch (c) {
-  case ESCAPE:
-  case CTRL_KEY('l'):
-    break;
-  case CTRL_KEY('q'):
-    if (E.dirty && quit_times > 0) {
-      set_status_message("Unsaved changes! Press Ctrl+q again to quit.");
-      quit_times--;
-      return;
+  if (E.mode == MODE_INSERT) {
+    switch (c) {
+    case ESCAPE:
+      E.mode = MODE_NORMAL;
+      break;
+    case '\t':
+      autocomplete();
+      break;
+    default:
+      if (c == BACKSPACE || c == DEL_KEY || c == CTRL_KEY('h')) {
+        if (c == DEL_KEY)
+          move_cursor(ARROW_RIGHT);
+        del_char();
+      } else if (c == '\r' || c == '\n') {
+        insert_enter();
+      } else {
+        insert_char(c);
+      }
     }
-    clear_screen();
-    exit(0);
-    break;
-  case CTRL_KEY('s'):
-    save_file();
-    break;
-  case '\r':
-  case '\n':
-    insert_enter();
-    break;
-  case BACKSPACE:
-  case DEL_KEY:
-  case CTRL_KEY('h'):
-    if (c == DEL_KEY) {
+  } else {
+    switch (c) {
+    case 'i':
+      E.mode = MODE_INSERT;
+      break;
+    case 'h':
+      move_cursor(ARROW_LEFT);
+      break;
+    case 'j':
+      move_cursor(ARROW_DOWN);
+      break;
+    case 'k':
+      move_cursor(ARROW_UP);
+      break;
+    case 'l':
       move_cursor(ARROW_RIGHT);
+      break;
+    case ':':
+      command_mode();
+      break;
+    case '/':
+      search_mode();
+      break;
+    case CTRL_KEY('f'):
+      search_mode();
+      break;
+    case CTRL_KEY('n'):
+      switch_buffer((cur_buffer + 1) % num_buffers);
+      break;
+    case CTRL_KEY('p'):
+      switch_buffer((cur_buffer - 1 + num_buffers) % num_buffers);
+      break;
+    case CTRL_KEY('q'):
+      if (E.dirty && quit_times > 0) {
+        set_status_message("Unsaved changes! Press Ctrl+q again to quit.");
+        quit_times--;
+        return;
+      }
+      clear_screen();
+      exit(0);
+      break;
+    case CTRL_KEY('s'):
+      save_file();
+      break;
     }
-    del_char();
-    break;
-  case CTRL_KEY('f'):
-    find();
-    break;
-  case ARROW_DOWN:
-  case ARROW_UP:
-  case ARROW_RIGHT:
-  case ARROW_LEFT:
-    move_cursor(c);
-    break;
-  case PAGE_UP:
-  case PAGE_DOWN: {
-    int times = E.screen_rows;
-    while (times--)
-      move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
-  } break;
-  default:
-    insert_char(c);
   }
   quit_times = 1;
+}
+
+void switch_buffer(int idx) {
+  if (idx < 0 || idx >= num_buffers) return;
+  cur_buffer = idx;
+  E_ = buffers[cur_buffer];
+  select_syntax_highlight();
+}
+
+void open_new_file(char *filename) {
+  if (num_buffers >= 10) return;
+  buffers[num_buffers] = malloc(sizeof(struct editor_config));
+  init_buffer(buffers[num_buffers]);
+  E_ = buffers[num_buffers];
+  if (filename) open_file(filename);
+  num_buffers++;
+  cur_buffer = num_buffers - 1;
+}
+
+void autocomplete() {
+  erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+  if (!row) return;
+  int i = E.cx - 1;
+  while (i >= 0 && (isalnum(row->chars[i]) || row->chars[i]=='_')) i--;
+  int start = i + 1;
+  int len = E.cx - start;
+  if (len <= 0) return;
+  char prefix[32];
+  if (len >= (int)sizeof(prefix)) return;
+  memcpy(prefix, &row->chars[start], len);
+  prefix[len] = '\0';
+  char **keywords = NULL;
+  if (E.syntax) keywords = E.syntax->keywords;
+  if (!keywords) return;
+  for (int k=0; keywords[k]; k++) {
+    if (strncmp(keywords[k], prefix, len)==0) {
+      const char *kw = keywords[k];
+      int kwlen = strlen(kw);
+      if (kw[kwlen-1]=='|') kwlen--;
+      for (int j=len; j<kwlen; j++) {
+        insert_char(kw[j]);
+      }
+      break;
+    }
+  }
+}
+
+static void command_execute(char *cmd) {
+  if (strcmp(cmd, "q") == 0) {
+    clear_screen();
+    exit(0);
+  } else if (strcmp(cmd, "w") == 0) {
+    save_file();
+  } else if (strcmp(cmd, "help") == 0) {
+    open_new_file("help.txt");
+  } else if (strncmp(cmd, "s/", 2) == 0) {
+    char *p = strchr(cmd+2, '/');
+    if (p) {
+      *p = '\0';
+      char *repl = strchr(p+1,'/');
+      if (repl) {
+        *repl = '\0';
+        substitute(cmd+2, repl+1);
+      }
+    }
+  }
+}
+
+void command_mode() {
+  char *cmd = show_prompt(":%s", NULL);
+  if (cmd) {
+    command_execute(cmd);
+    free(cmd);
+  }
+}
+
+void search_mode() {
+  char *pat = show_prompt("/%s", NULL);
+  if (!pat) return;
+  regex_t reg;
+  if (regcomp(&reg, pat, REG_EXTENDED)) {
+    free(pat);
+    return;
+  }
+  for (int r=0;r<E.numrows;r++) {
+    regmatch_t m;
+    if (regexec(&reg, E.row[r].chars, 1, &m, 0)==0) {
+      E.cy = r;
+      E.cx = m.rm_so;
+      E.rowoff = E.numrows;
+      break;
+    }
+  }
+  regfree(&reg);
+  free(pat);
+}
+
+void substitute(char *pat, char *repl) {
+  regex_t reg;
+  if (regcomp(&reg, pat, REG_EXTENDED)) return;
+  for (int r=0;r<E.numrows;r++) {
+    regmatch_t m;
+    if (regexec(&reg, E.row[r].chars, 1, &m, 0)==0) {
+      erow *row = &E.row[r];
+      char *newrow = malloc(row->size - (m.rm_eo - m.rm_so) + strlen(repl) + 1);
+      memcpy(newrow, row->chars, m.rm_so);
+      strcpy(newrow + m.rm_so, repl);
+      strcpy(newrow + m.rm_so + strlen(repl), row->chars + m.rm_eo);
+      free(row->chars);
+      row->chars = newrow;
+      row->size = strlen(newrow);
+      update_row(row);
+      break;
+    }
+  }
+  regfree(&reg);
 }

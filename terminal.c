@@ -1,8 +1,9 @@
 #include "terminal.h"
+#include <ncurses.h>
 
 void clear_screen() {
-  write(STDOUT_FILENO, "\x1b[2J", 4);
-  write(STDOUT_FILENO, "\x1b[H", 3);
+  clear();
+  refresh();
 }
 
 int die(const char *s) {
@@ -27,6 +28,7 @@ int get_window_size(int *rows, int *cols) {
 }
 
 void disable_raw_mode() {
+  endwin();
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termois) == -1) {
     die("tcsetattr");
   }

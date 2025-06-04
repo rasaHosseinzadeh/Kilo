@@ -18,6 +18,8 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <regex.h>
+#include <ncurses.h>
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -68,9 +70,17 @@ struct editor_config {
   time_t statusmsg_time;
   struct editorSyntax *syntax;
   struct termios orig_termois;
+  int mode;
 };
 
-extern struct editor_config E;
+enum editor_mode {
+  MODE_NORMAL,
+  MODE_INSERT,
+  MODE_COMMAND
+};
+
+extern struct editor_config *E_;
+#define E (*E_)
 
 enum editorKey {
   ESCAPE = 27,
@@ -98,5 +108,11 @@ int syntax_to_color(int hl);
 void select_syntax_highlight();
 int is_separator(int c);
 void update_row(erow *row);
+void switch_buffer(int idx);
+void open_new_file(char *filename);
+void autocomplete();
+void command_mode();
+void search_mode();
+void substitute(char *pattern, char *repl);
 
 #endif

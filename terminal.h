@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <ncurses.h>
 
 void clear_screen();
 int die(const char *s);

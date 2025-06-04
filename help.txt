@@ -1,0 +1,15 @@
+Kilo Help
+=========
+
+Normal mode commands:
+  i     - switch to insert mode
+  :help - open this help
+  :w    - save file
+  :q    - quit
+  :s/pat/repl/ - substitute first match of pat with repl (regex)
+  /pat  - search for pattern using regex
+  Tab   - autocomplete keywords when in insert mode
+
+Movement keys in normal mode:
+  h - left, j - down, k - up, l - right
+
